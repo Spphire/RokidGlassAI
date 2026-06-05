@@ -27,15 +27,9 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "RokidAIAssistant"
+rootProject.name = "RokidPhotoAI"
 
-// Original integrated version of the app (for development and testing purposes)
-include(":app")
-
-// Modular Architecture
-
-include(":common") // Shared Modules (Communication Protocol, Constants)
-
-include(":phone-app") // Mobile App (AI Computation, Heavy Processing)
-
-include(":glasses-app") // Glasses App (Display, Input)
+// Simplified photo-AI architecture.
+include(":common") // Shared Bluetooth protocol and photo packet definitions.
+include(":phone-app") // Phone relay app: prompt, camera test, Bluetooth bridge, AI request.
+include(":glasses-app") // Glasses app: camera trigger, photo compression/transfer, result display.

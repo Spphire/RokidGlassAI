@@ -5,13 +5,16 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.Manifest
 import android.bluetooth.BluetoothSocket
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.rokidcommon.protocol.photo.PhotoTransferState
 import com.example.rokidglasses.MainActivity
 import com.example.rokidglasses.R
@@ -156,12 +159,15 @@ class CameraService : Service() {
         bluetoothSocket = socket
         
         if (socket != null && socket.isConnected) {
-            transferProtocol = PhotoTransferProtocol(socket) { current, total ->
-                val progress = current.toFloat() / total
-                _captureState.value = PhotoCaptureState.Transferring(progress)
-                
-                Log.d(TAG, "Transfer progress: $current / $total (${(progress * 100).toInt()}%)")
-            }
+            transferProtocol = PhotoTransferProtocol(
+                bluetoothSocket = socket,
+                onProgress = { current, total ->
+                    val progress = current.toFloat() / total
+                    _captureState.value = PhotoCaptureState.Transferring(progress)
+
+                    Log.d(TAG, "Transfer progress: $current / $total (${(progress * 100).toInt()}%)")
+                }
+            )
             updateNotification(getString(R.string.bluetooth_connected_ready))
         } else {
             transferProtocol = null
@@ -171,7 +177,7 @@ class CameraService : Service() {
     
     /**
      * Capture photo and send to phone.
-     * Main entry point triggered by key press or voice command.
+     * Main entry point triggered by a key press or phone capture request.
      */
     suspend fun captureAndSend(): Result<TransferStatistics> = withContext(Dispatchers.IO) {
         try {
@@ -336,6 +342,12 @@ class CameraService : Service() {
     }
     
     private fun updateNotification(text: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         val notification = createNotification(text)
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(NOTIFICATION_ID, notification)

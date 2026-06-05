@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.util.Log
+import com.example.rokidcommon.protocol.photo.PacketUtils
 import com.example.rokidcommon.protocol.photo.PhotoTransferConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -69,6 +70,8 @@ object ImageCompressor {
         
         // Scale to exact target size while maintaining aspect ratio
         val scaledBitmap = scaleBitmap(sampledBitmap, targetWidth, targetHeight)
+        val outputWidth = scaledBitmap.width
+        val outputHeight = scaledBitmap.height
         
         // Recycle sampled bitmap if different from scaled
         if (sampledBitmap != scaledBitmap) {
@@ -90,6 +93,15 @@ object ImageCompressor {
             }
         } while (compressedData.size > maxSize)
         
+        val chunks = PacketUtils.calculateChunkCount(compressedData.size)
+        val estimatedTransferMs = estimateTransferTimeMs(compressedData.size)
+        Log.d(
+            TAG,
+            "Transfer image: original=${originalWidth}x${originalHeight}/${imageData.size}B, " +
+                "output=${outputWidth}x${outputHeight}/${compressedData.size}B, jpegQ=$currentQuality, " +
+                "chunks=$chunks, btEstimateMs=$estimatedTransferMs, maxSize=$maxSize"
+        )
+
         // Recycle bitmap
         scaledBitmap.recycle()
         

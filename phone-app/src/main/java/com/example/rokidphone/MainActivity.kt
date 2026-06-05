@@ -1,628 +1,545 @@
 package com.example.rokidphone
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.os.SystemClock
+import android.provider.Settings
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
-import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import com.example.rokidphone.data.SettingsRepository
-import com.example.rokidphone.data.validateForChat
-import com.example.rokidphone.data.validateForSpeech
+import androidx.core.content.FileProvider
+import com.example.rokidphone.service.BluetoothConnectionState
 import com.example.rokidphone.service.PhoneAIService
-import com.example.rokidphone.ui.LlmParametersScreen
-import com.example.rokidphone.ui.TtsSettingsScreen
-import com.example.rokidphone.ui.SettingsScreen
-import com.example.rokidphone.ui.conversation.ChatScreen
-import com.example.rokidphone.ui.conversation.ConversationHistoryScreen
-import com.example.rokidphone.ui.gallery.ClearAllConfirmDialog
-import com.example.rokidphone.ui.gallery.DeleteConfirmDialog
-import com.example.rokidphone.ui.gallery.PhotoDetailScreen
-import com.example.rokidphone.ui.gallery.PhotoGalleryScreen
-import com.example.rokidphone.ui.home.HomeScreen
-import com.example.rokidphone.ui.logs.LogViewerScreen
-import com.example.rokidphone.ui.navigation.BottomNavDestination
-import com.example.rokidphone.ui.navigation.NavRoutes
-import com.example.rokidphone.ui.theme.RokidPhoneTheme
-import com.example.rokidphone.viewmodel.ConversationViewModel
-import com.example.rokidphone.viewmodel.PhotoGalleryViewModel
-import com.example.rokidphone.viewmodel.PhoneViewModel
+import com.example.rokidphone.service.ServiceBridge
+import com.example.rokidphone.service.ai.AiRequestSettings
+import com.example.rokidphone.service.ai.AiRequestSettingsStore
+import com.example.rokidphone.service.ai.CodexRelayConfig
+import com.example.rokidphone.service.ai.CodexRelayVisionClient
+import com.example.rokidphone.service.ai.PromptStore
+import com.example.rokidphone.service.photo.GlassesPhotoSimulator
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 
-class MainActivity : AppCompatActivity() {
-    
+class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
-            startAIService()
+        if (permissions.values.all { it }) {
+            startBridgeService()
         }
     }
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // Auto start service
         checkPermissionsAndStart()
-        
+
         setContent {
-            RokidPhoneTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    PhoneMainScreen(
-                        onStartService = { checkPermissionsAndStart() },
-                        onStopService = { stopAIService() }
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    PhotoAiWorkbench(
+                        onStart = { checkPermissionsAndStart() },
+                        onStop = { stopBridgeService() }
                     )
                 }
             }
         }
     }
-    
+
     private fun checkPermissionsAndStart() {
-        val requiredPermissions = mutableListOf<String>()
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            requiredPermissions.addAll(listOf(
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE
-            ))
+        val required = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
-        
-        requiredPermissions.add(Manifest.permission.RECORD_AUDIO)
-        
-        val notGranted = requiredPermissions.filter {
+
+        val missing = required.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        
-        if (notGranted.isEmpty()) {
-            startAIService()
+
+        if (missing.isEmpty()) {
+            startBridgeService()
         } else {
-            permissionLauncher.launch(notGranted.toTypedArray())
+            permissionLauncher.launch(missing.toTypedArray())
         }
     }
-    
-    private fun startAIService() {
-        val intent = Intent(this, PhoneAIService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+
+    private fun startBridgeService() {
+        PhoneAIService.start(this)
     }
-    
-    private fun stopAIService() {
-        stopService(Intent(this, PhoneAIService::class.java))
+
+    private fun stopBridgeService() {
+        PhoneAIService.stop(this)
     }
 }
 
-/**
- * Main Screen with Bottom Navigation following Material Design 3
- */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhoneMainScreen(
-    viewModel: PhoneViewModel = viewModel(),
-    onStartService: () -> Unit,
-    onStopService: () -> Unit
+private fun PhotoAiWorkbench(
+    onStart: () -> Unit,
+    onStop: () -> Unit
 ) {
     val context = LocalContext.current
-    val settingsRepository = remember { SettingsRepository.getInstance(context) }
-    val settings by settingsRepository.settingsFlow.collectAsState()
-    
-    val navController = rememberNavController()
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentDestination = navBackStackEntry?.destination
-    
-    val uiState by viewModel.uiState.collectAsState()
-    
-    // Check if initial setup is needed when settings are loaded
-    LaunchedEffect(settings) {
-        viewModel.checkInitialSetup(settings.hasAnyApiKeyConfigured())
+    val scope = rememberCoroutineScope()
+    val serviceRunning by ServiceBridge.serviceStateFlow.collectAsState()
+    val bluetoothState by ServiceBridge.bluetoothStateFlow.collectAsState()
+    val deviceName by ServiceBridge.connectedDeviceNameFlow.collectAsState()
+    val processingStatus by ServiceBridge.processingStatusFlow.collectAsState()
+    val phoneTestState by PhonePhotoTestRunner.state.collectAsState()
+    var prompt by rememberSaveable { mutableStateOf("") }
+    var reasoningEffort by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_REASONING_EFFORT) }
+    var textVerbosity by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_TEXT_VERBOSITY) }
+    var maxOutputTokens by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_MAX_OUTPUT_TOKENS.toString()) }
+    var maxImageSidePx by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_MAX_IMAGE_SIDE_PX.toString()) }
+    var jpegQuality by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_JPEG_QUALITY.toString()) }
+    var timeoutSeconds by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_TIMEOUT_SECONDS.toString()) }
+    var pendingPhotoUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    var batteryOptimized by remember { mutableStateOf(context.isBatteryOptimizationActive()) }
+    val backgroundSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        batteryOptimized = context.isBatteryOptimizationActive()
     }
-    
-    // Show initial setup dialog when no API key is configured
-    if (uiState.showInitialSetup) {
-        InitialSetupDialog(
-            onGoToSettings = {
-                viewModel.dismissInitialSetup()
-                navController.navigate(NavRoutes.SETTINGS)
+
+    LaunchedEffect(Unit) {
+        if (prompt.isBlank()) {
+            prompt = PromptStore.getPrompt(context)
+        }
+        val settings = AiRequestSettingsStore.getSettings(context)
+        reasoningEffort = settings.reasoningEffort
+        textVerbosity = settings.textVerbosity
+        maxOutputTokens = settings.maxOutputTokens.toString()
+        maxImageSidePx = settings.maxImageSidePx.toString()
+        jpegQuality = settings.jpegQuality.toString()
+        timeoutSeconds = settings.timeoutSeconds.toString()
+    }
+
+    fun currentAiSettings(): AiRequestSettings {
+        return AiRequestSettings(
+            reasoningEffort = reasoningEffort,
+            textVerbosity = textVerbosity,
+            maxOutputTokens = maxOutputTokens.toIntOrNull()
+                ?: AiRequestSettingsStore.DEFAULT_MAX_OUTPUT_TOKENS,
+            maxImageSidePx = maxImageSidePx.toIntOrNull()
+                ?: AiRequestSettingsStore.DEFAULT_MAX_IMAGE_SIDE_PX,
+            jpegQuality = jpegQuality.toIntOrNull()
+                ?: AiRequestSettingsStore.DEFAULT_JPEG_QUALITY,
+            timeoutSeconds = timeoutSeconds.toIntOrNull()
+                ?: AiRequestSettingsStore.DEFAULT_TIMEOUT_SECONDS
+        ).normalized()
+    }
+
+    fun saveAiSettings(settings: AiRequestSettings = currentAiSettings()) {
+        val normalized = settings.normalized()
+        reasoningEffort = normalized.reasoningEffort
+        textVerbosity = normalized.textVerbosity
+        maxOutputTokens = normalized.maxOutputTokens.toString()
+        maxImageSidePx = normalized.maxImageSidePx.toString()
+        jpegQuality = normalized.jpegQuality.toString()
+        timeoutSeconds = normalized.timeoutSeconds.toString()
+        AiRequestSettingsStore.saveSettings(context, normalized)
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        val photoUri = pendingPhotoUriString?.let(Uri::parse)
+        Log.d(TAG, "Phone camera result: success=$success, uri=$photoUri")
+        if (!success || photoUri == null) {
+            PhonePhotoTestRunner.setMessage("Camera returned no image.")
+            return@rememberLauncherForActivityResult
+        }
+
+        PromptStore.savePrompt(context, prompt)
+        saveAiSettings()
+        PhonePhotoTestRunner.start(context, photoUri, prompt, currentAiSettings())
+        pendingPhotoUriString = null
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            val photoUri = context.createTempPhotoUri()
+            pendingPhotoUriString = photoUri.toString()
+            PhonePhotoTestRunner.setMessage("Opening camera...")
+            Log.d(TAG, "Phone camera launch after permission: uri=$photoUri")
+            cameraLauncher.launch(photoUri)
+        } else {
+            PhonePhotoTestRunner.setMessage("Camera permission denied.")
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text("Rokid Photo AI", style = MaterialTheme.typography.headlineMedium)
+
+        Text("AI Relay", style = MaterialTheme.typography.titleMedium)
+        Text("URL: ${CodexRelayConfig.baseUrl}")
+        Text("Model: ${CodexRelayConfig.model}")
+        OutlinedTextField(
+            modifier = Modifier.fillMaxWidth(),
+            value = prompt,
+            onValueChange = {
+                prompt = it
+                PromptStore.savePrompt(context, it)
             },
-            onDismiss = {
-                viewModel.dismissInitialSetup()
-            }
+            minLines = 3,
+            label = { Text("Preset prompt") },
+            placeholder = { Text("Example: 帮我回答图中的题目") }
         )
-    }
-    
-    // Show API key warning dialog when triggered by service
-    if (uiState.showApiKeyWarning) {
-        ApiKeyMissingDialog(
-            settings = settings,
-            onGoToSettings = {
-                viewModel.dismissApiKeyWarning()
-                navController.navigate(NavRoutes.SETTINGS)
-            },
-            onDismiss = {
-                viewModel.dismissApiKeyWarning()
+
+        Text("AI Parameters", style = MaterialTheme.typography.titleMedium)
+        Text("reasoning=$reasoningEffort, verbosity=$textVerbosity, tokens=$maxOutputTokens, timeout=${timeoutSeconds}s")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { saveAiSettings(AiRequestSettingsStore.FAST_PRESET) }) {
+                Text("Fast")
             }
-        )
-    }
-    
-    Scaffold(
-        topBar = {
-            // Only show top bar on Home screen
-            if (currentDestination?.route == NavRoutes.HOME) {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.app_title)) },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
-                )
+            TextButton(onClick = { saveAiSettings(AiRequestSettingsStore.BALANCED_PRESET) }) {
+                Text("Balanced")
             }
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp
-            ) {
-                BottomNavDestination.entries.forEach { destination ->
-                    val selected = currentDestination?.route == destination.route
-                    NavigationBarItem(
-                        icon = {
-                            Icon(
-                                imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
-                                contentDescription = stringResource(destination.labelResId)
-                            )
-                        },
-                        label = { Text(stringResource(destination.labelResId)) },
-                        selected = selected,
-                        onClick = {
-                            // Navigate to the selected destination
-                            if (currentDestination?.route != destination.route) {
-                                if (destination.route == NavRoutes.HOME) {
-                                    // For HOME: clear entire back stack and go to HOME
-                                    navController.navigate(destination.route) {
-                                        popUpTo(navController.graph.startDestinationId) {
-                                            inclusive = true
-                                        }
-                                        launchSingleTop = true
-                                    }
-                                } else {
-                                    // For other bottom nav items: navigate normally
-                                    navController.navigate(destination.route) {
-                                        // Pop back to HOME but keep HOME in stack
-                                        popUpTo(NavRoutes.HOME) {
-                                            saveState = false
-                                            inclusive = false
-                                        }
-                                        launchSingleTop = true
-                                        restoreState = false
-                                    }
-                                }
-                            }
-                        }
-                    )
-                }
+            TextButton(onClick = { saveAiSettings(AiRequestSettingsStore.QUALITY_PRESET) }) {
+                Text("Quality")
             }
         }
-    ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = NavRoutes.HOME,
-            modifier = Modifier.padding(padding),
-            enterTransition = { fadeIn(animationSpec = tween(300)) },
-            exitTransition = { fadeOut(animationSpec = tween(300)) }
+        OptionButtons(
+            label = "Reasoning",
+            options = AiRequestSettingsStore.REASONING_EFFORTS,
+            selected = reasoningEffort,
+            onSelected = {
+                reasoningEffort = it
+                saveAiSettings()
+            }
+        )
+        OptionButtons(
+            label = "Verbosity",
+            options = AiRequestSettingsStore.TEXT_VERBOSITIES,
+            selected = textVerbosity,
+            onSelected = {
+                textVerbosity = it
+                saveAiSettings()
+            }
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            NumberField(
+                modifier = Modifier.weight(1f),
+                value = maxOutputTokens,
+                onValueChange = { maxOutputTokens = it },
+                label = "Tokens"
+            )
+            NumberField(
+                modifier = Modifier.weight(1f),
+                value = maxImageSidePx,
+                onValueChange = { maxImageSidePx = it },
+                label = "Image"
+            )
+            NumberField(
+                modifier = Modifier.weight(1f),
+                value = jpegQuality,
+                onValueChange = { jpegQuality = it },
+                label = "JPEG"
+            )
+            NumberField(
+                modifier = Modifier.weight(1f),
+                value = timeoutSeconds,
+                onValueChange = { timeoutSeconds = it },
+                label = "Timeout"
+            )
+        }
+        TextButton(onClick = { saveAiSettings() }) {
+            Text("Save AI Parameters")
+        }
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !phoneTestState.isTesting,
+            onClick = {
+                PromptStore.savePrompt(context, prompt)
+                saveAiSettings()
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                    == PackageManager.PERMISSION_GRANTED
+                ) {
+                    val photoUri = context.createTempPhotoUri()
+                    pendingPhotoUriString = photoUri.toString()
+                    PhonePhotoTestRunner.setMessage("Opening camera...")
+                    Log.d(TAG, "Phone camera launch: uri=$photoUri")
+                    cameraLauncher.launch(photoUri)
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            }
         ) {
-            composable(NavRoutes.HOME) {
-                HomeScreen(
-                    connectionState = uiState.connectionState,
-                    connectedGlassesName = uiState.connectedGlassesName,
-                    isServiceRunning = uiState.isServiceRunning,
-                    latestPhotoPath = uiState.latestPhotoPath,
-                    processingStatus = uiState.processingStatus,
-                    currentModelId = settings.aiModelId,
-                    conversations = uiState.conversations,
-                    recordingState = uiState.recordingState,
-                    onConnect = { viewModel.startScanning() },
-                    onDisconnect = { viewModel.disconnect() },
-                    onStartService = onStartService,
-                    onStopService = onStopService,
-                    onCapturePhoto = { viewModel.requestCapturePhoto() },
-                    onStartPhoneRecording = { viewModel.startPhoneRecording() },
-                    onStartGlassesRecording = { viewModel.startGlassesRecording() },
-                    onPauseRecording = { viewModel.pauseRecording() },
-                    onStopRecording = { viewModel.stopRecording() },
-                    onViewConversationHistory = { navController.navigate(NavRoutes.CHAT) },
-                    onViewGallery = { navController.navigate(NavRoutes.GALLERY) },
-                    onViewRecordings = { navController.navigate(NavRoutes.RECORDINGS) }
-                )
+            Text(if (phoneTestState.isTesting) "Testing..." else "Take Phone Photo and Test AI")
+        }
+
+        Text(phoneTestState.message, style = MaterialTheme.typography.bodyLarge)
+
+        HorizontalDivider()
+
+        Text("Glasses Bridge", style = MaterialTheme.typography.titleMedium)
+        Text("Service: ${if (serviceRunning) "Running" else "Stopped"}")
+        Text("Bluetooth: ${bluetoothState.toDisplayText()}")
+        Text("Device: ${deviceName ?: "None"}")
+        Text("Latest: $processingStatus")
+        Text("Background: ${if (batteryOptimized) "Battery optimized" else "Allowed"}")
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onStart) {
+                Text("Start")
             }
-            
-            composable(NavRoutes.RECORDINGS) {
-                com.example.rokidphone.ui.recording.RecordingsScreen(
-                    onBack = { navController.popBackStack() },
-                    onRecordingDetail = { recordingId ->
-                        navController.navigate(NavRoutes.recordingDetail(recordingId))
-                    }
-                )
+            TextButton(onClick = onStop) {
+                Text("Stop")
             }
-            
-            composable(
-                route = NavRoutes.RECORDING_DETAIL,
-                arguments = listOf(
-                    androidx.navigation.navArgument("recordingId") { 
-                        type = androidx.navigation.NavType.StringType 
-                    }
-                )
-            ) { backStackEntry ->
-                val recordingId = backStackEntry.arguments?.getString("recordingId") ?: ""
-                com.example.rokidphone.ui.recording.RecordingDetailScreen(
-                    recordingId = recordingId,
-                    onBack = { navController.popBackStack() }
-                )
-            }
-            
-            composable(NavRoutes.GALLERY) {
-                // Photo Gallery screen
-                val galleryViewModel: PhotoGalleryViewModel = viewModel()
-                val groupedPhotos by galleryViewModel.groupedPhotos.collectAsState()
-                val photos by galleryViewModel.photos.collectAsState()
-                val photoCount by galleryViewModel.photoCount.collectAsState()
-                val galleryUiState by galleryViewModel.uiState.collectAsState()
-                val context = LocalContext.current
-                
-                // Reset detail view when entering gallery tab
-                DisposableEffect(Unit) {
-                    onDispose {
-                        galleryViewModel.closePhotoDetail()
-                        galleryViewModel.clearSelection()
+        }
+
+        if (batteryOptimized) {
+            TextButton(
+                onClick = {
+                    runCatching {
+                        backgroundSettingsLauncher.launch(context.backgroundRunSettingsIntent())
+                    }.onFailure {
+                        backgroundSettingsLauncher.launch(context.appDetailsSettingsIntent())
                     }
                 }
-                
-                // Show detail view if a photo is selected
-                val currentDetailPhoto = galleryUiState.currentDetailPhoto
-                if (currentDetailPhoto != null) {
-                    PhotoDetailScreen(
-                        photos = photos,
-                        initialPhoto = currentDetailPhoto,
-                        onBack = { galleryViewModel.closePhotoDetail() },
-                        onDelete = { galleryViewModel.deletePhoto(it) },
-                        onShare = { photo ->
-                            galleryViewModel.sharePhoto(photo) { intent ->
-                                context.startActivity(intent)
-                            }
-                        },
-                        loadBitmap = { photoData, maxSize ->
-                            galleryViewModel.loadBitmap(photoData, maxSize)
-                        }
-                    )
+            ) {
+                Text("Allow Background")
+            }
+        }
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = serviceRunning && bluetoothState == BluetoothConnectionState.CONNECTED,
+            onClick = {
+                PromptStore.savePrompt(context, prompt)
+                saveAiSettings()
+                scope.launch {
+                    ServiceBridge.requestCapturePhoto()
+                }
+            }
+        ) {
+            Text("Ask Glasses to Capture and Analyze")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun OptionButtons(
+    label: String,
+    options: List<String>,
+    selected: String,
+    onSelected: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                if (option == selected) {
+                    Button(onClick = { onSelected(option) }) {
+                        Text(option)
+                    }
                 } else {
-                    PhotoGalleryScreen(
-                        groupedPhotos = groupedPhotos,
-                        photoCount = photoCount,
-                        uiState = galleryUiState,
-                        onPhotoClick = { galleryViewModel.openPhotoDetail(it) },
-                        onPhotoLongClick = { galleryViewModel.togglePhotoSelection(it.id) },
-                        onToggleSelection = { galleryViewModel.togglePhotoSelection(it) },
-                        onSelectAll = { galleryViewModel.selectAll() },
-                        onClearSelection = { galleryViewModel.clearSelection() },
-                        onDeleteSelected = { galleryViewModel.showDeleteConfirmDialog() },
-                        onShareSelected = { 
-                            galleryViewModel.shareSelectedPhotos { intent ->
-                                context.startActivity(intent)
-                            }
-                        },
-                        onClearAll = { galleryViewModel.showClearAllDialog() },
-                        onBack = { navController.popBackStack() },
-                        loadBitmap = { photoData, maxSize ->
-                            galleryViewModel.loadBitmap(photoData, maxSize)
-                        }
-                    )
-                }
-                
-                // Delete confirmation dialog
-                if (galleryUiState.showDeleteConfirmDialog) {
-                    DeleteConfirmDialog(
-                        count = galleryUiState.selectedPhotos.size,
-                        onConfirm = { galleryViewModel.deleteSelectedPhotos() },
-                        onDismiss = { galleryViewModel.hideDeleteConfirmDialog() }
-                    )
-                }
-                
-                // Clear all confirmation dialog
-                if (galleryUiState.showClearAllDialog) {
-                    ClearAllConfirmDialog(
-                        onConfirm = { galleryViewModel.clearAllPhotos() },
-                        onDismiss = { galleryViewModel.hideClearAllDialog() }
-                    )
-                }
-            }
-            
-            composable(NavRoutes.CHAT) {
-                // Full Chat screen with conversation management
-                val conversationViewModel: ConversationViewModel = viewModel()
-                val conversations by conversationViewModel.conversations.collectAsState()
-                val currentConversationId by conversationViewModel.currentConversationId.collectAsState()
-                val currentMessages by conversationViewModel.currentMessages.collectAsState()
-                val currentConversation by conversationViewModel.currentConversation.collectAsState()
-                val chatUiState by conversationViewModel.uiState.collectAsState()
-                val inputText by conversationViewModel.inputText.collectAsState()
-                val context = LocalContext.current
-                
-                // Reset conversation state when leaving chat tab
-                DisposableEffect(Unit) {
-                    onDispose {
-                        conversationViewModel.closeCurrentConversation()
+                    TextButton(onClick = { onSelected(option) }) {
+                        Text(option)
                     }
                 }
-                
-                if (currentConversationId != null) {
-                    // Show chat screen
-                    ChatScreen(
-                        conversationTitle = currentConversation?.title ?: stringResource(R.string.new_conversation),
-                        messages = currentMessages,
-                        isLoading = chatUiState.isLoading,
-                        error = chatUiState.error,
-                        inputText = inputText,
-                        onInputChange = { conversationViewModel.updateInputText(it) },
-                        onSendMessage = { conversationViewModel.sendMessage() },
-                        onClearError = { conversationViewModel.clearError() },
-                        onBack = { conversationViewModel.closeCurrentConversation() },
-                        onClearHistory = { conversationViewModel.clearCurrentConversation() },
-                        onExport = {
-                            conversationViewModel.exportCurrentConversation { intent ->
-                                context.startActivity(intent)
-                            }
-                        }
-                    )
-                } else {
-                    // Show conversation history
-                    ConversationHistoryScreen(
-                        conversations = conversations,
-                        onConversationClick = { conversationViewModel.selectConversation(it) },
-                        onNewConversation = { conversationViewModel.createNewConversation() },
-                        onDeleteConversation = { conversationViewModel.deleteConversation(it) },
-                        onArchiveConversation = { conversationViewModel.archiveConversation(it) },
-                        onPinConversation = { conversationViewModel.pinConversation(it) },
-                        onBack = { navController.popBackStack() }
-                    )
-                }
-            }
-            
-            composable(
-                route = NavRoutes.CONVERSATION_DETAIL,
-                arguments = listOf(navArgument("conversationId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
-                val conversationViewModel: ConversationViewModel = viewModel()
-                val context = LocalContext.current
-                
-                // Select the conversation
-                LaunchedEffect(conversationId) {
-                    conversationViewModel.selectConversation(conversationId)
-                }
-                
-                val currentMessages by conversationViewModel.currentMessages.collectAsState()
-                val currentConversation by conversationViewModel.currentConversation.collectAsState()
-                val chatUiState by conversationViewModel.uiState.collectAsState()
-                val inputText by conversationViewModel.inputText.collectAsState()
-                
-                ChatScreen(
-                    conversationTitle = currentConversation?.title ?: "",
-                    messages = currentMessages,
-                    isLoading = chatUiState.isLoading,
-                    error = chatUiState.error,
-                    inputText = inputText,
-                    onInputChange = { conversationViewModel.updateInputText(it) },
-                    onSendMessage = { conversationViewModel.sendMessage() },
-                    onClearError = { conversationViewModel.clearError() },
-                    onBack = { navController.popBackStack() },
-                    onClearHistory = { conversationViewModel.clearCurrentConversation() },
-                    onExport = {
-                        conversationViewModel.exportCurrentConversation { intent ->
-                            context.startActivity(intent)
-                        }
-                    }
-                )
-            }
-            
-            composable(NavRoutes.SETTINGS) {
-                SettingsScreen(
-                    settings = settings,
-                    onSettingsChange = { newSettings ->
-                        settingsRepository.saveSettings(newSettings)
-                    },
-                    onBack = { navController.popBackStack() },
-                    onNavigateToLogViewer = { navController.navigate(NavRoutes.LOG_VIEWER) },
-                    onNavigateToLlmParameters = { navController.navigate(NavRoutes.LLM_PARAMETERS) },
-                    onNavigateToTtsSettings = { navController.navigate(NavRoutes.TTS_SETTINGS) }
-                )
-            }
-            
-            composable(NavRoutes.LLM_PARAMETERS) {
-                LlmParametersScreen(
-                    settings = settings,
-                    onSettingsChange = { newSettings ->
-                        settingsRepository.saveSettings(newSettings)
-                    },
-                    onBack = { navController.popBackStack() }
-                )
-            }
-            
-            composable(NavRoutes.TTS_SETTINGS) {
-                TtsSettingsScreen(
-                    settings = settings,
-                    onSettingsChange = { newSettings ->
-                        settingsRepository.saveSettings(newSettings)
-                    },
-                    onBack = { navController.popBackStack() }
-                )
-            }
-            
-            composable(NavRoutes.LOG_VIEWER) {
-                LogViewerScreen(
-                    onNavigateBack = { navController.popBackStack() }
-                )
             }
         }
     }
 }
 
-/**
- * Conversation item data class
- */
-data class ConversationItem(
-    val role: String,
-    val content: String,
-    val timestamp: Long = System.currentTimeMillis()
+@Composable
+private fun NumberField(
+    modifier: Modifier = Modifier,
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String
+) {
+    OutlinedTextField(
+        modifier = modifier,
+        value = value,
+        onValueChange = { input -> onValueChange(input.filter { it.isDigit() }) },
+        singleLine = true,
+        label = { Text(label) }
+    )
+}
+
+private fun android.content.Context.createTempPhotoUri(): Uri {
+    val imageDir = File(cacheDir, "camera").apply { mkdirs() }
+    val imageFile = File.createTempFile("phone_ai_", ".jpg", imageDir)
+    return FileProvider.getUriForFile(this, "${packageName}.fileprovider", imageFile)
+}
+
+private fun Context.isBatteryOptimizationActive(): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+    val powerManager = getSystemService(PowerManager::class.java)
+    return powerManager?.isIgnoringBatteryOptimizations(packageName) != true
+}
+
+@SuppressLint("BatteryLife")
+private fun Context.backgroundRunSettingsIntent(): Intent {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isBatteryOptimizationActive()) {
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+    } else {
+        appDetailsSettingsIntent()
+    }
+}
+
+private fun Context.appDetailsSettingsIntent(): Intent {
+    return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.parse("package:$packageName")
+    }
+}
+
+private data class PhonePhotoTestState(
+    val message: String = "No phone photo test yet.",
+    val isTesting: Boolean = false
 )
 
-/**
- * Dialog shown when API keys are not configured
- */
-@Composable
-fun ApiKeyMissingDialog(
-    settings: com.example.rokidphone.data.ApiSettings,
-    onGoToSettings: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val chatValidation = settings.validateForChat()
-    val speechValidation = settings.validateForSpeech()
-    
-    val hasChatIssue = chatValidation !is com.example.rokidphone.data.SettingsValidationResult.Valid
-    val hasSpeechIssue = speechValidation !is com.example.rokidphone.data.SettingsValidationResult.Valid
-    
-    // Build the message based on issues
-    val message = buildString {
-        if (hasChatIssue) {
-            when (chatValidation) {
-                is com.example.rokidphone.data.SettingsValidationResult.MissingApiKey -> {
-                    append("• ")
-                    append(stringResource(chatValidation.provider.displayNameResId))
-                    append(" API Key ")
-                    append(stringResource(R.string.api_key_not_set))
-                    append("\n")
-                }
-                is com.example.rokidphone.data.SettingsValidationResult.InvalidConfiguration -> {
-                    append("• ")
-                    append(chatValidation.message)
-                    append("\n")
-                }
-                else -> {}
-            }
+private object PhonePhotoTestRunner {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val visionClient = CodexRelayVisionClient()
+    private val _state = MutableStateFlow(PhonePhotoTestState())
+    val state: StateFlow<PhonePhotoTestState> = _state.asStateFlow()
+
+    fun setMessage(message: String) {
+        _state.value = _state.value.copy(message = message)
+    }
+
+    fun start(context: Context, photoUri: Uri, prompt: String, aiSettings: AiRequestSettings) {
+        if (_state.value.isTesting) {
+            _state.value = _state.value.copy(message = "AI test is already running.")
+            return
         }
-        if (hasSpeechIssue) {
-            when (speechValidation) {
-                is com.example.rokidphone.data.SettingsValidationResult.MissingSpeechService -> {
-                    append("• ")
-                    append(stringResource(R.string.speech_service_not_configured))
+
+        val appContext = context.applicationContext
+        scope.launch {
+            var summary = ""
+            _state.value = PhonePhotoTestState("Reading photo...", true)
+            try {
+                val readStartMs = SystemClock.elapsedRealtime()
+                val imageBytes = withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openInputStream(photoUri)?.use { it.readBytes() }
                 }
-                else -> {}
+                if (imageBytes == null) {
+                    _state.value = PhonePhotoTestState("Unable to read captured image.")
+                    return@launch
+                }
+
+                Log.d(
+                    TAG,
+                    "Phone photo read: bytes=${imageBytes.size}, readMs=${SystemClock.elapsedRealtime() - readStartMs}"
+                )
+                _state.value = PhonePhotoTestState("Simulating glasses transfer image...", true)
+
+                val simulateStartMs = SystemClock.elapsedRealtime()
+                val simulatedPhoto = GlassesPhotoSimulator.simulate(imageBytes)
+                summary = simulatedPhoto.summary(SystemClock.elapsedRealtime() - simulateStartMs)
+                Log.d(TAG, "Phone glasses simulation: $summary")
+
+                _state.value = PhonePhotoTestState("$summary\nCalling AI...", true)
+                var lastAiProgress = "Starting AI request"
+                val result = withTimeoutOrNull(aiSettings.timeoutSeconds * 1_000L) {
+                    visionClient.analyze(simulatedPhoto.data, prompt, aiSettings) { progress ->
+                        lastAiProgress = progress.toStatusText()
+                        _state.value = PhonePhotoTestState("$summary\n$lastAiProgress", true)
+                    }
+                }
+
+                _state.value = PhonePhotoTestState(
+                    when (result) {
+                        null -> "$summary\n\nAI test timed out after ${aiSettings.timeoutSeconds}s.\nLast stage: $lastAiProgress"
+                        else -> result.fold(
+                            onSuccess = { "$summary\n\n${ServiceBridge.cleanMarkdown(it)}" },
+                            onFailure = { "$summary\n\nAI test failed: ${it.message ?: "unknown error"}" }
+                        )
+                    },
+                    false
+                )
+            } catch (e: CancellationException) {
+                _state.value = PhonePhotoTestState(
+                    (if (summary.isNotBlank()) "$summary\n\n" else "") + "AI test was cancelled."
+                )
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Phone AI test failed", e)
+                _state.value = PhonePhotoTestState(
+                    (if (summary.isNotBlank()) "$summary\n\n" else "") +
+                        "AI test failed: ${e.message ?: "unknown error"}"
+                )
+            } finally {
+                if (_state.value.isTesting) {
+                    _state.value = _state.value.copy(isTesting = false)
+                }
             }
         }
     }
-    
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                Icons.Default.Warning,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.error
-            )
-        },
-        title = {
-            Text(stringResource(R.string.api_key_required))
-        },
-        text = {
-            Column {
-                Text(message)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = stringResource(R.string.api_key_setup_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = onGoToSettings) {
-                Text(stringResource(R.string.go_to_settings))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.later))
-            }
-        }
-    )
 }
 
-/**
- * Initial setup dialog shown when no API key is configured at all
- */
-@Composable
-fun InitialSetupDialog(
-    onGoToSettings: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                Icons.Default.Settings,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-        },
-        title = {
-            Text(stringResource(R.string.initial_setup_title))
-        },
-        text = {
-            Column {
-                Text(stringResource(R.string.initial_setup_message))
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = stringResource(R.string.initial_setup_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = onGoToSettings) {
-                Text(stringResource(R.string.setup_now))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.later))
-            }
-        }
-    )
+private fun BluetoothConnectionState.toDisplayText(): String = when (this) {
+    BluetoothConnectionState.DISCONNECTED -> "Disconnected"
+    BluetoothConnectionState.LISTENING -> "Waiting"
+    BluetoothConnectionState.CONNECTING -> "Connecting"
+    BluetoothConnectionState.CONNECTED -> "Connected"
 }
+
+private const val TAG = "MainActivity"

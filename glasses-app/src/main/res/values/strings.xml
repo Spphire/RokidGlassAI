@@ -1,59 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Rokid AI</string>
-    
-    <!-- Status -->
-    <string name="listening">Listening...</string>
+    <string name="app_name">Rokid Photo AI</string>
+
     <string name="processing">Processing...</string>
-    <string name="ready">Ready</string>
     <string name="connected">Connected</string>
-    <string name="disconnected">Disconnected</string>
-    <string name="tap_to_speak">Tap to speak</string>
     <string name="tap_to_connect">Tap to connect</string>
-    <string name="recording">Recording</string>
-    
-    <!-- Device Selection -->
+
     <string name="select_phone">Select Phone</string>
     <string name="no_paired_devices">No paired devices found</string>
-    <string name="pair_device_hint">Please pair your phone in system settings</string>
+    <string name="pair_device_hint">Pair your phone in system settings first</string>
     <string name="unknown_device">Unknown Device</string>
     <string name="cancel">Cancel</string>
     <string name="recommended">Recommended</string>
-    
-    <!-- Display Messages -->
-    <string name="not_connected">Not connected to phone\nPlease select device</string>
+
+    <string name="not_connected">Not connected to phone</string>
     <string name="connecting_status">Connecting...</string>
-    <string name="connected_ready">Connected, ready</string>
-    <string name="please_connect_phone">Please connect phone first</string>
+    <string name="connected_ready">Connected, ready to capture</string>
+    <string name="please_connect_phone">Tap to select phone</string>
     <string name="please_wait">Please wait</string>
-    <string name="tap_touchpad_start">Tap touchpad to start conversation</string>
-    <string name="tap_stop_recording">Tap again to stop recording</string>
-    <string name="select_paired_device">Select paired device</string>
-    <string name="sending_audio">Sending audio to phone...</string>
-    <string name="no_voice_detected">No voice detected</string>
+    <string name="tap_touchpad_photo">Tap touchpad to capture and analyze</string>
     <string name="please_try_again">Please try again</string>
-    <string name="sending">Sending...</string>
-    <string name="send_failed">Send failed\nPlease check Bluetooth connection</string>
-    <string name="reconnect_try_again">Reconnect and try again</string>
-    <string name="waiting_phone">Waiting for phone processing...</string>
-    <string name="ai_thinking">AI is thinking</string>
-    <string name="mic_permission_required">Microphone permission required</string>
-    <string name="tap_continue">Tap touchpad to continue conversation</string>
-    <string name="you_said">You said: %s\n\nAI is thinking...</string>
     <string name="error_prefix">Error: %s</string>
-    <string name="say_hey_rokid">Say \'Hey Rokid\' to start conversation</string>
-    <string name="tap_touchpad_record">Tap touchpad to start recording</string>
-    
-    <!-- Pagination -->
+
     <string name="page_indicator">%1$d / %2$d</string>
     <string name="swipe_for_more">Swipe up/down for more</string>
-    <string name="swipe_up_previous">▲ Swipe up for previous</string>
-    <string name="swipe_down_next">▼ Swipe down for next</string>
-    <string name="swipe_left_right_pages">← Swipe to see more pages →</string>
-    
-    <!-- Photo Capture -->
+
     <string name="bluetooth_not_connected">Bluetooth not connected</string>
-    <string name="connect_phone_first">Please connect phone first</string>
+    <string name="connect_phone_first">Connect phone first</string>
     <string name="capturing_photo">Capturing photo...</string>
     <string name="please_wait_short">Please wait</string>
     <string name="compressing_photo">Compressing...</string>
@@ -61,7 +34,7 @@
     <string name="photo_sent_waiting_ai">Sent, waiting for AI analysis...</string>
     <string name="photo_analysis_no_result">Unable to analyze this photo</string>
     <string name="capture_failed">Capture failed</string>
-    <string name="capture_failed_hint">Camera may be in use, please try again later</string>
+    <string name="capture_failed_hint">Camera may be busy, try again</string>
     <string name="transfer_failed">Transfer failed: %s</string>
     <string name="error_message">Error: %s</string>
     <string name="please_retry">Please try again</string>
@@ -69,14 +42,4 @@
     <string name="bluetooth_connected_ready">Bluetooth connected, ready</string>
     <string name="waiting_bluetooth_connection">Waiting for Bluetooth connection...</string>
     <string name="camera_permission_missing">Camera permission missing</string>
-    
-    <!-- AI System Prompt -->
-    <string name="glasses_system_prompt">You are a friendly AI assistant installed on Rokid smart glasses. Answer in the user\'s language, with each response not exceeding 100 words.</string>
-    <string name="glasses_system_prompt_ack">Understood, I am your Rokid AI assistant. I will assist you concisely. How can I help you?</string>
-
-    <!-- Wake Word Service -->
-    <string name="wake_word_channel_name">Voice Wake Service</string>
-    <string name="wake_word_channel_description">Continuously listens for voice wake command</string>
-    <string name="wake_word_notification_title">Rokid AI Assistant</string>
-    <string name="wake_word_notification_text">Say \"Hi Rokid\" to start conversation</string>
 </resources>

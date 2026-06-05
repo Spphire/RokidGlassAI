@@ -3,44 +3,56 @@ package com.example.rokidglasses.service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import com.example.rokidcommon.protocol.Message
 import com.example.rokidcommon.protocol.MessageType
+import com.example.rokidcommon.protocol.photo.PacketUtils
+import com.example.rokidcommon.protocol.photo.PhotoTransferConstants
+import com.example.rokidglasses.service.photo.PhotoTransferResponse
 import com.google.common.truth.Truth.assertThat
-import io.mockk.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.*
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.io.InputStream
 import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
 class BluetoothSppClientTest {
-
     private lateinit var context: Context
     private lateinit var scope: TestScope
     private lateinit var client: BluetoothSppClient
     private lateinit var mockBluetoothAdapter: BluetoothAdapter
     private lateinit var mockBluetoothManager: BluetoothManager
+    private lateinit var mockPrefs: SharedPreferences
 
     @Before
     fun setUp() {
         context = mockk(relaxed = true)
         mockBluetoothManager = mockk(relaxed = true)
         mockBluetoothAdapter = mockk(relaxed = true)
+        mockPrefs = mockk(relaxed = true)
 
         every { context.getSystemService(Context.BLUETOOTH_SERVICE) } returns mockBluetoothManager
+        every { context.checkSelfPermission(any()) } returns PackageManager.PERMISSION_GRANTED
+        every { context.getSharedPreferences(any(), any()) } returns mockPrefs
+        every { mockPrefs.getString(any(), any()) } returns null
         every { mockBluetoothManager.adapter } returns mockBluetoothAdapter
 
         scope = TestScope(UnconfinedTestDispatcher())
@@ -52,13 +64,9 @@ class BluetoothSppClientTest {
         scope.cancel()
     }
 
-    // ==================== BluetoothClientState enum ====================
-
     @Test
     fun `all expected client states exist`() {
-        // 測試：所有預期的 BluetoothClientState 列舉值存在
-        val states = BluetoothClientState.entries
-        assertThat(states).containsExactly(
+        assertThat(BluetoothClientState.entries).containsExactly(
             BluetoothClientState.DISCONNECTED,
             BluetoothClientState.CONNECTING,
             BluetoothClientState.CONNECTED
@@ -66,72 +74,27 @@ class BluetoothSppClientTest {
     }
 
     @Test
-    fun `client state count is exactly 3`() {
-        // Test: no extra states added
-        assertThat(BluetoothClientState.entries.size).isEqualTo(3)
-    }
-
-    @Test
-    fun `valueOf resolves valid client state names`() {
-        // 測試：valueOf 可正確解析各狀態名稱
-        assertThat(BluetoothClientState.valueOf("DISCONNECTED"))
-            .isEqualTo(BluetoothClientState.DISCONNECTED)
-        assertThat(BluetoothClientState.valueOf("CONNECTING"))
-            .isEqualTo(BluetoothClientState.CONNECTING)
-        assertThat(BluetoothClientState.valueOf("CONNECTED"))
-            .isEqualTo(BluetoothClientState.CONNECTED)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun `valueOf throws for unknown client state`() {
-        BluetoothClientState.valueOf("RECONNECTING")
-    }
-
-    // ==================== Initial state ====================
-
-    @Test
-    fun `initial connection state is DISCONNECTED`() {
-        // 測試：初始連線狀態為 DISCONNECTED
+    fun `initial state is disconnected with no socket`() {
         assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.DISCONNECTED)
-    }
-
-    @Test
-    fun `initial connected device name is null`() {
-        // Test: no device connected initially
         assertThat(client.connectedDeviceName.value).isNull()
-    }
-
-    @Test
-    fun `initial connectedSocket is null`() {
-        // Test: connectedSocket returns null when disconnected
         assertThat(client.connectedSocket).isNull()
     }
 
-    // ==================== SERVICE_UUID ====================
-
     @Test
-    fun `SERVICE_UUID matches expected value`() {
-        // 測試：UUID 與手機端一致
-        val expectedUuid = UUID.fromString("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-        assertThat(BluetoothSppClient.SERVICE_UUID).isEqualTo(expectedUuid)
+    fun `SERVICE_UUID matches phone app uuid`() {
+        assertThat(BluetoothSppClient.SERVICE_UUID)
+            .isEqualTo(UUID.fromString("a1b2c3d4-e5f6-7890-abcd-ef1234567890"))
     }
 
-    // ==================== Permission checks ====================
-
     @Test
-    fun `getPairedDevices returns empty list when no permission`() {
-        // 測試：無權限時回傳空列表
-        // On API 31+ (S), BLUETOOTH_CONNECT is required
-        // The mock context doesn't grant it, so should return empty
-        val devices = client.getPairedDevices()
-        // With Robolectric and relaxed mocks, behavior depends on SDK version
-        // Just verify it doesn't crash
-        assertThat(devices).isNotNull()
+    fun `getPairedDevices returns empty list when permission is denied`() {
+        every { context.checkSelfPermission(any()) } returns PackageManager.PERMISSION_DENIED
+
+        assertThat(client.getPairedDevices()).isEmpty()
     }
 
     @Test
     fun `isBluetoothEnabled returns adapter state`() {
-        // 測試：isBluetoothEnabled 代理 BluetoothAdapter.isEnabled
         every { mockBluetoothAdapter.isEnabled } returns true
         assertThat(client.isBluetoothEnabled()).isTrue()
 
@@ -139,60 +102,26 @@ class BluetoothSppClientTest {
         assertThat(client.isBluetoothEnabled()).isFalse()
     }
 
-    // ==================== Connect guards ====================
-
     @Test
     fun `connect does not proceed when already connecting`() = scope.runTest {
-        // 測試：已在連線中時不會重複連線
-        val device = mockk<BluetoothDevice>(relaxed = true)
+        setConnectionState(BluetoothClientState.CONNECTING)
+        client.connect(mockk<BluetoothDevice>(relaxed = true))
 
-        // Use reflection to set state to CONNECTING
-        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val stateFlow = stateField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<BluetoothClientState>
-        stateFlow.value = BluetoothClientState.CONNECTING
-
-        // connect should return immediately without launching a new job
-        client.connect(device)
-
-        // State should still be CONNECTING (not changed to DISCONNECTED from failure)
         assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.CONNECTING)
     }
 
     @Test
     fun `connect does not proceed when already connected`() = scope.runTest {
-        // 測試：已連線時不會重複連線
-        val device = mockk<BluetoothDevice>(relaxed = true)
+        setConnectionState(BluetoothClientState.CONNECTED)
+        client.connect(mockk<BluetoothDevice>(relaxed = true))
 
-        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val stateFlow = stateField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<BluetoothClientState>
-        stateFlow.value = BluetoothClientState.CONNECTED
-
-        client.connect(device)
-
-        // State should remain CONNECTED
         assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.CONNECTED)
     }
 
-    // ==================== Disconnect ====================
-
     @Test
-    fun `disconnect sets state to DISCONNECTED and clears device name`() {
-        // 測試：disconnect 會清除連線狀態與裝置名稱
-        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val stateFlow = stateField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<BluetoothClientState>
-        stateFlow.value = BluetoothClientState.CONNECTED
-
-        val nameField = BluetoothSppClient::class.java.getDeclaredField("_connectedDeviceName")
-        nameField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val nameFlow = nameField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<String?>
-        nameFlow.value = "Test Phone"
+    fun `disconnect sets state to disconnected and clears device name`() {
+        setConnectionState(BluetoothClientState.CONNECTED)
+        setConnectedDeviceName("Test Phone")
 
         client.disconnect()
 
@@ -200,157 +129,72 @@ class BluetoothSppClientTest {
         assertThat(client.connectedDeviceName.value).isNull()
     }
 
-    // ==================== Heartbeat ACK ====================
-
     @Test
     fun `onHeartbeatAckReceived resets missed heartbeat count`() {
-        // 測試：收到 HEARTBEAT_ACK 後重置遺漏計數
         val missedField = BluetoothSppClient::class.java.getDeclaredField("missedHeartbeatCount")
         missedField.isAccessible = true
-
-        // Simulate missed heartbeats
         missedField.setInt(client, 2)
-        assertThat(missedField.getInt(client)).isEqualTo(2)
 
         client.onHeartbeatAckReceived()
 
         assertThat(missedField.getInt(client)).isEqualTo(0)
     }
 
-    // ==================== sendMessage ====================
-
     @Test
     fun `sendMessage returns false when not connected`() = scope.runTest {
-        // 測試：未連線時 sendMessage 回傳 false
-        val message = Message(type = MessageType.VOICE_START)
-        val result = client.sendMessage(message)
+        val result = client.sendMessage(Message.capturePhoto())
+
         assertThat(result).isFalse()
     }
 
     @Test
-    fun `sendMessage writes to output stream when connected`() = scope.runTest {
-        // 測試：已連線時 sendMessage 寫入 outputStream 並回傳 true
+    fun `sendMessage writes json to output stream when connected`() = scope.runTest {
         val outputBytes = ByteArrayOutputStream()
+        setConnectionState(BluetoothClientState.CONNECTED)
+        setOutputStream(outputBytes)
 
-        // Set up connected state via reflection
-        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val stateFlow = stateField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<BluetoothClientState>
-        stateFlow.value = BluetoothClientState.CONNECTED
-
-        val osField = BluetoothSppClient::class.java.getDeclaredField("outputStream")
-        osField.isAccessible = true
-        osField.set(client, outputBytes)
-
-        val message = Message(type = MessageType.VOICE_START)
-        val result = client.sendMessage(message)
+        val result = client.sendMessage(Message.capturePhoto())
 
         assertThat(result).isTrue()
         val written = outputBytes.toString(Charsets.UTF_8.name())
         assertThat(written).contains("\"type\"")
+        assertThat(written).contains(MessageType.CAPTURE_PHOTO.code.toString())
         assertThat(written).endsWith("\n")
     }
 
     @Test
     fun `sendMessage handles IOException and triggers disconnection`() = scope.runTest {
-        // 測試：sendMessage 發生 IOException 時觸發斷線處理
         val mockOutputStream = mockk<java.io.OutputStream>(relaxed = true)
         every { mockOutputStream.write(any<ByteArray>()) } throws IOException("connection lost")
+        setConnectionState(BluetoothClientState.CONNECTED)
+        setOutputStream(mockOutputStream)
 
-        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val stateFlow = stateField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<BluetoothClientState>
-        stateFlow.value = BluetoothClientState.CONNECTED
-
-        val osField = BluetoothSppClient::class.java.getDeclaredField("outputStream")
-        osField.isAccessible = true
-        osField.set(client, mockOutputStream)
-
-        val message = Message(type = MessageType.VOICE_START)
-        val result = client.sendMessage(message)
+        val result = client.sendMessage(Message.displayText("hello"))
 
         assertThat(result).isFalse()
     }
 
-    // ==================== handleDisconnection (auto-reconnect) ====================
-
     @Test
     fun `handleDisconnection skips when already disconnected`() = scope.runTest {
-        // 測試：已是 DISCONNECTED 狀態時不做任何處理
-        assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.DISCONNECTED)
+        invokeHandleDisconnection()
 
-        // handleDisconnection is a suspend fun, so the JVM method takes a Continuation param
-        val method = BluetoothSppClient::class.java.getDeclaredMethod(
-            "handleDisconnection", kotlin.coroutines.Continuation::class.java
-        )
-        method.isAccessible = true
-
-        // Invoke suspend function via kotlin.coroutines.intrinsics
-        val result = kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { cont ->
-            method.invoke(client, cont)
-        }
-
-        // State should still be DISCONNECTED
         assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.DISCONNECTED)
     }
 
     @Test
     fun `handleDisconnection cancels heartbeat and sets disconnected`() = scope.runTest {
-        // 測試：handleDisconnection 會取消 heartbeat 並設定 DISCONNECTED
-        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
-        stateField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val stateFlow = stateField.get(client) as kotlinx.coroutines.flow.MutableStateFlow<BluetoothClientState>
-        stateFlow.value = BluetoothClientState.CONNECTED
+        setConnectionState(BluetoothClientState.CONNECTED)
 
-        // handleDisconnection is a suspend fun
-        val method = BluetoothSppClient::class.java.getDeclaredMethod(
-            "handleDisconnection", kotlin.coroutines.Continuation::class.java
-        )
-        method.isAccessible = true
-
-        // Launch as coroutine so the suspend machinery works
-        val job = scope.launch {
-            kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { cont ->
-                method.invoke(client, cont)
-            }
-        }
-        // Let coroutines run
+        val job = launch { invokeHandleDisconnection() }
         advanceUntilIdle()
 
+        assertThat(job.isCompleted).isTrue()
         assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.DISCONNECTED)
         assertThat(client.connectedDeviceName.value).isNull()
     }
 
-    // ==================== sendVoiceStart / sendVoiceEnd convenience ====================
-
     @Test
-    fun `sendVoiceStart sends VOICE_START message`() = scope.runTest {
-        // 測試：sendVoiceStart 發送 VOICE_START 訊息
-        // Not connected, so should return false
-        val result = client.sendVoiceStart()
-        assertThat(result).isFalse()
-    }
-
-    @Test
-    fun `sendVoiceEnd sends VOICE_END with audio data`() = scope.runTest {
-        // 測試：sendVoiceEnd 發送包含音訊的 VOICE_END 訊息
-        val result = client.sendVoiceEnd(byteArrayOf(1, 2, 3))
-        assertThat(result).isFalse() // Not connected
-    }
-
-    // ==================== Retry backoff constants (recently modified) ====================
-
-    @Test
-    fun `retry backoff delay formula produces correct values`() {
-        // 測試：重試延遲公式正確 (2500ms + attempt * 1500ms)
-        // After the recent modification, backoff starts at 4s:
-        // attempt 1: 2500 + 1*1500 = 4000ms
-        // attempt 2: 2500 + 2*1500 = 5500ms
-        // attempt 3: 2500 + 3*1500 = 7000ms
-        // attempt 4: 2500 + 4*1500 = 8500ms
+    fun `retry backoff delay formula produces expected values`() {
         for (attempt in 1..4) {
             val delay = 2500L + (attempt * 1500L)
             val expected = when (attempt) {
@@ -364,14 +208,135 @@ class BluetoothSppClientTest {
         }
     }
 
-    // ==================== connectByAddress ====================
-
     @Test
     fun `connectByAddress does nothing when no permission`() {
-        // 測試：無權限時 connectByAddress 不做處理
-        // Explicitly deny permission (relaxed mockk returns 0 = GRANTED by default)
-        every { context.checkSelfPermission(any()) } returns android.content.pm.PackageManager.PERMISSION_DENIED
+        every { context.checkSelfPermission(any()) } returns PackageManager.PERMISSION_DENIED
+
         client.connectByAddress("AA:BB:CC:DD:EE:FF")
+
         assertThat(client.connectionState.value).isEqualTo(BluetoothClientState.DISCONNECTED)
+    }
+
+    @Test
+    fun `phone candidate ranking prefers Android phone names over iPhone`() {
+        val iPhone = mockDevice(name = "iPhone", address = "00:11:22:33:44:55")
+        val iQoo = mockDevice(name = "iQOO 13", address = "40:45:A0:13:97:2A")
+
+        val ranked = invokeRankPairedDevicesForPhone(listOf(iPhone, iQoo))
+
+        assertThat(ranked.first()).isSameInstanceAs(iQoo)
+    }
+
+    @Test
+    fun `phone candidate ranking prefers persisted phone address`() {
+        val oldPhone = mockDevice(name = "Pixel", address = "AA:BB:CC:DD:EE:FF")
+        val preferredPhone = mockDevice(name = "Office Android", address = "11:22:33:44:55:66")
+        every { mockPrefs.getString("preferred_phone_address", null) } returns "11:22:33:44:55:66"
+
+        val ranked = invokeRankPairedDevicesForPhone(listOf(oldPhone, preferredPhone))
+
+        assertThat(ranked.first()).isSameInstanceAs(preferredPhone)
+    }
+
+    @Test
+    fun `processIncomingData routes photo ack and json message separately`() = scope.runTest {
+        val message = Message.photoAnalysisResult("done")
+        val ack = PacketUtils.createAckPacket(3, PhotoTransferConstants.STATUS_SUCCESS)
+        val combined = ack + (message.toJson() + "\n").toByteArray(Charsets.UTF_8)
+        val messageBuffer = StringBuilder()
+        val messages = mutableListOf<Message>()
+        val collectJob = launch { client.messageFlow.collect { messages.add(it) } }
+
+        invokeProcessIncomingData(combined, messageBuffer)
+        advanceUntilIdle()
+
+        val response = receivePhotoResponse()
+        assertThat(response).isInstanceOf(PhotoTransferResponse.Ack::class.java)
+        assertThat((response as PhotoTransferResponse.Ack).data.chunkIndex).isEqualTo(3)
+        assertThat(messages.map { it.type }).contains(MessageType.PHOTO_ANALYSIS_RESULT)
+
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `processIncomingData reassembles split retry packet`() = scope.runTest {
+        val retry = PacketUtils.createRetryPacket(7)
+        val messageBuffer = StringBuilder()
+
+        invokeProcessIncomingData(retry.copyOfRange(0, 2), messageBuffer)
+        invokeProcessIncomingData(retry.copyOfRange(2, retry.size), messageBuffer)
+
+        val response = receivePhotoResponse()
+        assertThat(response).isInstanceOf(PhotoTransferResponse.Retry::class.java)
+        assertThat((response as PhotoTransferResponse.Retry).chunkIndex).isEqualTo(7)
+    }
+
+    private fun setConnectionState(state: BluetoothClientState) {
+        val stateField = BluetoothSppClient::class.java.getDeclaredField("_connectionState")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (stateField.get(client) as MutableStateFlow<BluetoothClientState>).value = state
+    }
+
+    private fun setConnectedDeviceName(name: String?) {
+        val nameField = BluetoothSppClient::class.java.getDeclaredField("_connectedDeviceName")
+        nameField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (nameField.get(client) as MutableStateFlow<String?>).value = name
+    }
+
+    private fun setOutputStream(outputStream: java.io.OutputStream) {
+        val osField = BluetoothSppClient::class.java.getDeclaredField("outputStream")
+        osField.isAccessible = true
+        osField.set(client, outputStream)
+    }
+
+    private suspend fun invokeHandleDisconnection() {
+        val method = BluetoothSppClient::class.java.getDeclaredMethod(
+            "handleDisconnection",
+            kotlin.coroutines.Continuation::class.java
+        )
+        method.isAccessible = true
+        kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { cont ->
+            method.invoke(client, cont)
+        }
+    }
+
+    private suspend fun invokeProcessIncomingData(data: ByteArray, messageBuffer: StringBuilder) {
+        val method = BluetoothSppClient::class.java.getDeclaredMethod(
+            "processIncomingData",
+            ByteArray::class.java,
+            StringBuilder::class.java,
+            kotlin.coroutines.Continuation::class.java
+        )
+        method.isAccessible = true
+        kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { cont ->
+            method.invoke(client, data, messageBuffer, cont)
+        }
+    }
+
+    private fun receivePhotoResponse(): PhotoTransferResponse {
+        val field = BluetoothSppClient::class.java.getDeclaredField("photoResponseChannel")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val channel = field.get(client) as Channel<PhotoTransferResponse>
+        return channel.tryReceive().getOrThrow()
+    }
+
+    private fun mockDevice(name: String, address: String): BluetoothDevice {
+        return mockk<BluetoothDevice>(relaxed = true) {
+            every { this@mockk.name } returns name
+            every { this@mockk.address } returns address
+        }
+    }
+
+    private fun invokeRankPairedDevicesForPhone(devices: List<BluetoothDevice>): List<BluetoothDevice> {
+        val method = BluetoothSppClient::class.java.getDeclaredMethod(
+            "rankPairedDevicesForPhone",
+            List::class.java
+        )
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return method.invoke(client, devices) as List<BluetoothDevice>
     }
 }

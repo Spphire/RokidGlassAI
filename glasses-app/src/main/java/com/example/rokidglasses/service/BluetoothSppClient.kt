@@ -12,12 +12,21 @@ import android.os.Build
 import android.util.Log
 import com.example.rokidcommon.protocol.Message
 import com.example.rokidcommon.protocol.MessageType
+import com.example.rokidcommon.protocol.photo.PacketUtils
+import com.example.rokidcommon.protocol.photo.PhotoTransferConstants
+import com.example.rokidglasses.service.photo.PhotoTransferProtocol
+import com.example.rokidglasses.service.photo.PhotoTransferResponse
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -30,8 +39,8 @@ enum class BluetoothClientState {
 }
 
 /**
- * Glasses-side Bluetooth SPP Client
- * Responsible for connecting to phone, sending voice data and receiving AI responses
+ * Glasses-side Bluetooth SPP client.
+ * Responsible for connecting to the phone and exchanging photo AI control messages.
  */
 class BluetoothSppClient(
     private val context: Context,
@@ -45,6 +54,34 @@ class BluetoothSppClient(
         
         // Message delimiter
         private const val MESSAGE_DELIMITER = "\n"
+        private const val HANDSHAKE_TIMEOUT_MS = 4_000L
+        private const val PREFS_NAME = "rokid_glasses_bluetooth"
+        private const val KEY_PREFERRED_PHONE_ADDRESS = "preferred_phone_address"
+        private const val KEY_PREFERRED_PHONE_NAME = "preferred_phone_name"
+
+        private val PHONE_NAME_HINTS = mapOf(
+            "iqoo" to 250,
+            "vivo" to 220,
+            "pixel" to 200,
+            "xiaomi" to 190,
+            "redmi" to 190,
+            "oppo" to 180,
+            "oneplus" to 180,
+            "huawei" to 180,
+            "honor" to 180,
+            "samsung" to 180,
+            "android" to 120,
+            "phone" to 20
+        )
+        private val NON_ANDROID_PHONE_NAME_HINTS = listOf(
+            "iphone",
+            "ipad"
+        )
+
+        private val PHOTO_RESPONSE_PACKET_TYPES = setOf(
+            PhotoTransferConstants.PACKET_TYPE_ACK,
+            PhotoTransferConstants.PACKET_TYPE_RETRY
+        )
     }
     
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
@@ -55,10 +92,16 @@ class BluetoothSppClient(
     private var socket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
     private var outputStream: OutputStream? = null
+    private val sendMutex = Mutex()
     
     private var connectJob: Job? = null
     private var readJob: Job? = null
     private var heartbeatJob: Job? = null
+    private val handshakeAckChannel = Channel<Unit>(Channel.CONFLATED)
+    private val photoResponseChannel = Channel<PhotoTransferResponse>(Channel.BUFFERED)
+    private val photoResponseBuffer = ByteArrayOutputStream(PhotoTransferConstants.ACK_PACKET_SIZE)
+    private var expectedPhotoResponseLength = 0
+    private var parsingPhotoResponse = false
     
     // Heartbeat interval (10 seconds)
     private val HEARTBEAT_INTERVAL = 10_000L
@@ -107,7 +150,116 @@ class BluetoothSppClient(
         
         return bluetoothAdapter?.bondedDevices?.toList() ?: emptyList()
     }
-    
+
+    /**
+     * Test/deployment helper: connect to a paired device by address or partial name.
+     */
+    @SuppressLint("MissingPermission")
+    fun connectToPairedDevice(
+        address: String? = null,
+        nameQuery: String? = null,
+        maxRetries: Int = 5
+    ): Boolean {
+        if (!hasBluetoothPermission()) {
+            Log.e(TAG, "No Bluetooth permission")
+            return false
+        }
+
+        val normalizedAddress = address
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.uppercase(Locale.US)
+        val normalizedNameQuery = nameQuery?.trim()?.takeIf { it.isNotBlank() }
+        val devices = bluetoothAdapter?.bondedDevices?.toList().orEmpty()
+
+        val selectedDevices = if (normalizedAddress != null || normalizedNameQuery != null) {
+            devices.filter { device ->
+                val deviceAddress = runCatching { device.address.uppercase(Locale.US) }.getOrNull()
+                val deviceName = getSafeDeviceName(device)
+                val addressMatches = normalizedAddress != null && deviceAddress == normalizedAddress
+                val nameMatches = normalizedNameQuery != null &&
+                    deviceName.contains(normalizedNameQuery, ignoreCase = true)
+                addressMatches || nameMatches
+            }.sortedByDescending { device ->
+                val deviceAddress = runCatching { device.address.uppercase(Locale.US) }.getOrNull()
+                if (normalizedAddress != null && deviceAddress == normalizedAddress) 1 else 0
+            }
+        } else {
+            rankPairedDevicesForPhone(devices)
+        }
+
+        if (selectedDevices.isEmpty()) {
+            val availableDevices = devices.joinToString { device ->
+                "${getSafeDeviceName(device)} (${runCatching { device.address }.getOrDefault("unknown")})"
+            }
+            Log.w(
+                TAG,
+                "No paired device matched address=$normalizedAddress name=$normalizedNameQuery. " +
+                    "Available: $availableDevices"
+            )
+            return false
+        }
+
+        Log.d(
+            TAG,
+            "Matched paired device candidates: " + selectedDevices.joinToString { device ->
+                "${getSafeDeviceName(device)} " +
+                    "(${runCatching { device.address }.getOrDefault("unknown")})"
+            }
+        )
+        connectCandidates(selectedDevices, maxRetries)
+        return true
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun rankPairedDevicesForPhone(devices: List<BluetoothDevice>): List<BluetoothDevice> {
+        return devices.sortedByDescending { device -> phoneCandidateScore(device) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun phoneCandidateScore(device: BluetoothDevice): Int {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val preferredAddress = prefs.getString(KEY_PREFERRED_PHONE_ADDRESS, null)
+            ?.uppercase(Locale.US)
+        val preferredName = prefs.getString(KEY_PREFERRED_PHONE_NAME, null)
+        val deviceAddress = runCatching { device.address.uppercase(Locale.US) }.getOrNull()
+        val deviceName = getSafeDeviceName(device)
+        var score = 0
+        if (preferredAddress != null && preferredAddress == deviceAddress) {
+            score += 1_000
+        }
+        if (!preferredName.isNullOrBlank() && deviceName.equals(preferredName, ignoreCase = true)) {
+            score += 500
+        }
+        PHONE_NAME_HINTS.forEach { (hint, weight) ->
+            if (deviceName.contains(hint, ignoreCase = true)) {
+                score += weight
+            }
+        }
+        if (NON_ANDROID_PHONE_NAME_HINTS.any { hint -> deviceName.contains(hint, ignoreCase = true) }) {
+            score -= 200
+        }
+        return score
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun rememberPreferredPhone(device: BluetoothDevice) {
+        val address = runCatching { device.address }.getOrNull()
+        val name = getSafeDeviceName(device)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .apply {
+                if (!address.isNullOrBlank()) {
+                    putString(KEY_PREFERRED_PHONE_ADDRESS, address)
+                }
+                if (name.isNotBlank() && !name.startsWith("unknown", ignoreCase = true)) {
+                    putString(KEY_PREFERRED_PHONE_NAME, name)
+                }
+            }
+            .apply()
+        Log.d(TAG, "Remembered preferred phone: $name ($address)")
+    }
+
     /**
      * Connect to specified device (with retry mechanism)
      */
@@ -117,95 +269,125 @@ class BluetoothSppClient(
             Log.e(TAG, "No Bluetooth permission")
             return
         }
-        
+
+        connectCandidates(listOf(device), maxRetries)
+    }
+
+    private fun connectCandidates(devices: List<BluetoothDevice>, maxRetries: Int) {
         if (_connectionState.value == BluetoothClientState.CONNECTING ||
             _connectionState.value == BluetoothClientState.CONNECTED) {
             Log.w(TAG, "Already connecting or connected")
             return
         }
-        
+
         connectJob?.cancel()
         connectJob = scope.launch(Dispatchers.IO) {
-            var lastException: Exception? = null
-            
-            for (attempt in 1..maxRetries) {
-                try {
-                    _connectionState.value = BluetoothClientState.CONNECTING
-                    Log.d(TAG, "Connecting to ${getSafeDeviceName(device)}... (attempt $attempt/$maxRetries)")
-                    
-                    // Cancel device discovery to speed up connection
-                    bluetoothAdapter?.cancelDiscovery()
-                    
-                    // Wait a bit for discovery cancellation to take effect
-                    delay(200)
-                    
-                    // Close previous socket
-                    closeSocket()
-                    
-                    // Try multiple socket creation methods
-                    socket = createSocket(device, attempt)
-                    
-                    if (socket == null) {
-                        throw IOException("Failed to create socket")
-                    }
-                    
-                    // Connect with timeout handling
-                    Log.d(TAG, "Attempting socket connection...")
-                    socket?.connect()
-                    
-                    // Verify connection is established
-                    if (socket?.isConnected != true) {
-                        throw IOException("Socket not connected after connect() call")
-                    }
-                    
-                    inputStream = socket?.inputStream
-                    outputStream = socket?.outputStream
-                    
-                    _connectionState.value = BluetoothClientState.CONNECTED
-                    _connectedDeviceName.value = getSafeDeviceName(device)
-                    lastConnectedDevice = device
-                    missedHeartbeatCount = 0
-                    
-                    Log.d(TAG, "Connected to ${getSafeDeviceName(device)}")
-                    
-                    // Start reading messages
-                    startReading()
-                    
-                    // Start heartbeat to keep connection alive
-                    startHeartbeat()
-                    return@launch // Connection successful, exit
-                    
-                } catch (e: Exception) {
-                    Log.e(TAG, "Connection attempt $attempt failed: ${e.message}", e)
-                    lastException = e
-                    
-                    // Explicitly close socket and wait for system to release resources
-                    closeSocket()
-                    
-                    if (attempt < maxRetries) {
-                        // Progressive backoff: longer delays for more failed attempts
-                        // Start with 3s to give phone server time to restart its listening socket
-                        val delayMs = 2500L + (attempt * 1500L)  // 4s, 5.5s, 7s...
-                        Log.d(TAG, "Connection failed. Waiting ${delayMs}ms before retry $attempt/$maxRetries...")
-                        delay(delayMs)
-                        
-                        // Cancel any pending discovery operations before retry
-                        try {
-                            bluetoothAdapter?.cancelDiscovery()
-                            delay(300)  // Brief pause for cancellation to take effect
-                        } catch (e2: Exception) {
-                            Log.w(TAG, "Failed to cancel discovery: ${e2.message}")
-                        }
-                    }
+            devices.forEachIndexed { index, device ->
+                if (!isActive) return@launch
+                if (index > 0) {
+                    delay(1_000L)
+                }
+                if (connectWithRetries(device, maxRetries)) {
+                    return@launch
                 }
             }
-            
-            // All retries failed
-            Log.e(TAG, "All connection attempts failed")
+
+            Log.e(TAG, "All paired phone candidates failed")
             _connectionState.value = BluetoothClientState.DISCONNECTED
         }
     }
-    
+
+    @SuppressLint("MissingPermission")
+    private suspend fun connectWithRetries(device: BluetoothDevice, maxRetries: Int): Boolean {
+        var lastException: Exception? = null
+
+        for (attempt in 1..maxRetries) {
+            try {
+                _connectionState.value = BluetoothClientState.CONNECTING
+                Log.d(TAG, "Connecting to ${getSafeDeviceName(device)}... (attempt $attempt/$maxRetries)")
+
+                // Cancel device discovery to speed up connection
+                bluetoothAdapter?.cancelDiscovery()
+
+                // Wait a bit for discovery cancellation to take effect
+                delay(200)
+
+                // Close previous socket
+                closeSocket()
+
+                // Try multiple socket creation methods
+                val candidateSocket = createSocket(device, attempt)
+                if (candidateSocket == null) {
+                    throw IOException("Failed to create socket")
+                }
+
+                // Connect with timeout handling
+                Log.d(TAG, "Attempting socket connection...")
+                candidateSocket.connect()
+
+                // Verify connection is established
+                if (!candidateSocket.isConnected) {
+                    throw IOException("Socket not connected after connect() call")
+                }
+
+                socket = candidateSocket
+                inputStream = candidateSocket.inputStream
+                outputStream = candidateSocket.outputStream
+                missedHeartbeatCount = 0
+
+                Log.d(TAG, "Socket connected to ${getSafeDeviceName(device)}, waiting for app handshake")
+                startReading()
+                val handshakeOk = performHandshake()
+                if (!handshakeOk) {
+                    throw IOException("App handshake timed out")
+                }
+
+                _connectionState.value = BluetoothClientState.CONNECTED
+                _connectedDeviceName.value = getSafeDeviceName(device)
+                lastConnectedDevice = device
+                rememberPreferredPhone(device)
+
+                Log.d(TAG, "Connected to ${getSafeDeviceName(device)} after app handshake")
+
+                // Start heartbeat to keep connection alive
+                startHeartbeat()
+                return true
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Connection attempt $attempt failed: ${e.message}", e)
+                lastException = e
+
+                // Explicitly close socket and wait for system to release resources
+                closeSocket()
+
+                if (attempt < maxRetries) {
+                    // Progressive backoff: longer delays for more failed attempts
+                    // Start with 3s to give phone server time to restart its listening socket
+                    val delayMs = 2500L + (attempt * 1500L)  // 4s, 5.5s, 7s...
+                    Log.d(TAG, "Connection failed. Waiting ${delayMs}ms before retry $attempt/$maxRetries...")
+                    delay(delayMs)
+
+                    // Cancel any pending discovery operations before retry
+                    try {
+                        bluetoothAdapter?.cancelDiscovery()
+                        delay(300)  // Brief pause for cancellation to take effect
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "Failed to cancel discovery: ${e2.message}")
+                    }
+                }
+            }
+        }
+
+        Log.e(
+            TAG,
+            "All connection attempts failed for ${getSafeDeviceName(device)}: " +
+                (lastException?.message ?: "unknown")
+        )
+        closeSocket()
+        _connectionState.value = BluetoothClientState.DISCONNECTED
+        return false
+    }
+
     /**
      * Create socket using different methods based on attempt number
      * Prioritizes UUID-based methods (proper SDP lookup) for reliable channel discovery
@@ -213,14 +395,16 @@ class BluetoothSppClient(
      */
     @SuppressLint("MissingPermission")
     private fun createSocket(device: BluetoothDevice, attempt: Int): BluetoothSocket? {
-        // Prioritize UUID-based methods (uses SDP to find correct channel)
-        // Direct channel methods are unreliable after reconnection
+        // Try direct channel 4 first on Rokid/iQOO because SDP records can
+        // become stale while still returning a connected socket.
         
         return when (attempt) {
             1 -> {
-                // Method 1: Insecure RFCOMM with UUID (matches server's insecure mode)
-                // This uses SDP to discover the correct channel dynamically
-                Log.d(TAG, "Attempt 1: Using createInsecureRfcommSocketToServiceRecord (UUID-based)")
+                Log.d(TAG, "Attempt 1: Using reflection with channel 4")
+                tryReflectionChannel(device, 4)
+            }
+            2 -> {
+                Log.d(TAG, "Attempt 2: Using createInsecureRfcommSocketToServiceRecord (UUID-based)")
                 try {
                     device.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID)
                 } catch (e: Exception) {
@@ -228,9 +412,8 @@ class BluetoothSppClient(
                     null
                 }
             }
-            2 -> {
-                // Method 2: Standard secure RFCOMM with UUID
-                Log.d(TAG, "Attempt 2: Using createRfcommSocketToServiceRecord (UUID-based)")
+            3 -> {
+                Log.d(TAG, "Attempt 3: Using createRfcommSocketToServiceRecord (UUID-based)")
                 try {
                     device.createRfcommSocketToServiceRecord(SERVICE_UUID)
                 } catch (e: Exception) {
@@ -238,19 +421,31 @@ class BluetoothSppClient(
                     null
                 }
             }
-            3 -> {
-                // Method 3: Direct channel 4 (fallback if UUID methods fail)
-                Log.d(TAG, "Attempt 3: Using reflection with channel 4")
-                tryReflectionChannel(device, 4)
-            }
             4 -> {
-                // Method 4: Direct channel 1 (common fallback)
-                Log.d(TAG, "Attempt 4: Using reflection with channel 1")
+                Log.d(TAG, "Attempt 4: Using standard SPP UUID insecure socket")
+                try {
+                    device.createInsecureRfcommSocketToServiceRecord(PhotoTransferConstants.SPP_UUID)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Standard SPP insecure UUID method failed: ${e.message}")
+                    null
+                }
+            }
+            5 -> {
+                Log.d(TAG, "Attempt 5: Using standard SPP secure socket")
+                try {
+                    device.createRfcommSocketToServiceRecord(PhotoTransferConstants.SPP_UUID)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Standard SPP secure UUID method failed: ${e.message}")
+                    null
+                }
+            }
+            6 -> {
+                Log.d(TAG, "Attempt 6: Using reflection with channel 1")
                 tryReflectionChannel(device, 1)
             }
             else -> {
-                // Method 5: Try insecure direct channel
-                Log.d(TAG, "Attempt 5: Using createInsecureRfcommSocket with channel 4")
+                // Last resort: Try insecure direct channels.
+                Log.d(TAG, "Attempt $attempt: Using createInsecureRfcommSocket with channel 4")
                 try {
                     val method = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.java)
                     method.invoke(device, 4) as BluetoothSocket
@@ -392,40 +587,52 @@ class BluetoothSppClient(
             return false
         }
         
+        val sent = writeRawMessage(message)
+        if (!sent) {
+            handleDisconnection()
+        }
+        return sent
+    }
+
+    private suspend fun writeRawMessage(message: Message): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 val json = message.toJson()
                 val data = (json + MESSAGE_DELIMITER).toByteArray(Charsets.UTF_8)
-                
-                outputStream?.write(data)
-                outputStream?.flush()
+                writeRawBytes(data)
                 
                 Log.d(TAG, "Sent message: ${message.type}")
                 true
             } catch (e: IOException) {
                 Log.e(TAG, "Failed to send message", e)
-                handleDisconnection()
                 false
             }
         }
     }
-    
-    /**
-     * Send voice start signal
-     */
-    suspend fun sendVoiceStart(): Boolean {
-        return sendMessage(Message(type = MessageType.VOICE_START))
+
+    private suspend fun writeRawBytes(data: ByteArray) {
+        sendMutex.withLock {
+            outputStream?.write(data)
+            outputStream?.flush()
+        }
     }
-    
-    /**
-     * Send voice data (with complete audio)
-     */
-    suspend fun sendVoiceEnd(audioData: ByteArray): Boolean {
-        val message = Message(
-            type = MessageType.VOICE_END,
-            binaryData = audioData
-        )
-        return sendMessage(message)
+
+    private suspend fun performHandshake(): Boolean {
+        clearPendingHandshakeAcks()
+        val sent = writeRawMessage(Message.handshake("Rokid Glasses"))
+        if (!sent) return false
+
+        val confirmed = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
+            handshakeAckChannel.receive()
+            true
+        } == true
+
+        if (confirmed) {
+            Log.d(TAG, "App handshake acknowledged")
+        } else {
+            Log.w(TAG, "App handshake timed out")
+        }
+        return confirmed
     }
     
     /**
@@ -437,7 +644,7 @@ class BluetoothSppClient(
             val buffer = StringBuilder()
             val readBuffer = ByteArray(4096)
             
-            while (isActive && _connectionState.value == BluetoothClientState.CONNECTED) {
+            while (isActive && _connectionState.value != BluetoothClientState.DISCONNECTED) {
                 try {
                     val bytesRead = inputStream?.read(readBuffer) ?: -1
                     
@@ -446,19 +653,7 @@ class BluetoothSppClient(
                         break
                     }
                     
-                    val received = String(readBuffer, 0, bytesRead, Charsets.UTF_8)
-                    buffer.append(received)
-                    
-                    // Process complete messages
-                    var delimiterIndex: Int
-                    while (buffer.indexOf(MESSAGE_DELIMITER).also { delimiterIndex = it } >= 0) {
-                        val messageStr = buffer.substring(0, delimiterIndex)
-                        buffer.delete(0, delimiterIndex + MESSAGE_DELIMITER.length)
-                        
-                        if (messageStr.isNotBlank()) {
-                            parseAndEmitMessage(messageStr)
-                        }
-                    }
+                    processIncomingData(readBuffer.copyOf(bytesRead), buffer)
                     
                 } catch (e: IOException) {
                     Log.e(TAG, "Read error", e)
@@ -466,7 +661,114 @@ class BluetoothSppClient(
                 }
             }
             
-            handleDisconnection()
+            if (_connectionState.value == BluetoothClientState.CONNECTED) {
+                handleDisconnection()
+            } else {
+                Log.d(TAG, "Read loop exited while state=${_connectionState.value}")
+            }
+        }
+    }
+
+    private suspend fun processIncomingData(data: ByteArray, messageBuffer: StringBuilder) {
+        var offset = 0
+
+        while (offset < data.size) {
+            if (parsingPhotoResponse) {
+                val remaining = expectedPhotoResponseLength - photoResponseBuffer.size()
+                val bytesToRead = minOf(remaining, data.size - offset)
+                photoResponseBuffer.write(data, offset, bytesToRead)
+                offset += bytesToRead
+
+                if (photoResponseBuffer.size() >= expectedPhotoResponseLength) {
+                    val packet = photoResponseBuffer.toByteArray()
+                    photoResponseBuffer.reset()
+                    parsingPhotoResponse = false
+                    expectedPhotoResponseLength = 0
+                    emitPhotoTransferResponse(packet)
+                }
+                continue
+            }
+
+            val firstByte = data[offset]
+            if (firstByte in PHOTO_RESPONSE_PACKET_TYPES) {
+                val packetLength = getPhotoResponsePacketLength(firstByte)
+                photoResponseBuffer.reset()
+                expectedPhotoResponseLength = packetLength
+                parsingPhotoResponse = true
+
+                val bytesToRead = minOf(packetLength, data.size - offset)
+                photoResponseBuffer.write(data, offset, bytesToRead)
+                offset += bytesToRead
+
+                if (photoResponseBuffer.size() >= packetLength) {
+                    val packet = photoResponseBuffer.toByteArray()
+                    photoResponseBuffer.reset()
+                    parsingPhotoResponse = false
+                    expectedPhotoResponseLength = 0
+                    emitPhotoTransferResponse(packet)
+                }
+                continue
+            }
+
+            val nextPhotoResponse = findNextPhotoResponseOffset(data, offset)
+            val textEnd = if (nextPhotoResponse >= 0) nextPhotoResponse else data.size
+            if (textEnd > offset) {
+                messageBuffer.append(String(data, offset, textEnd - offset, Charsets.UTF_8))
+                offset = textEnd
+                processCompleteJsonMessages(messageBuffer)
+            } else {
+                offset++
+            }
+        }
+
+        processCompleteJsonMessages(messageBuffer)
+    }
+
+    private fun getPhotoResponsePacketLength(packetType: Byte): Int {
+        return when (packetType) {
+            PhotoTransferConstants.PACKET_TYPE_ACK -> PhotoTransferConstants.ACK_PACKET_SIZE
+            PhotoTransferConstants.PACKET_TYPE_RETRY -> PhotoTransferConstants.RETRY_PACKET_SIZE
+            else -> 0
+        }
+    }
+
+    private fun findNextPhotoResponseOffset(data: ByteArray, startOffset: Int): Int {
+        for (i in startOffset until data.size) {
+            if (data[i] in PHOTO_RESPONSE_PACKET_TYPES) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    private suspend fun emitPhotoTransferResponse(packet: ByteArray) {
+        try {
+            when (PacketUtils.parsePacketType(packet)) {
+                PhotoTransferConstants.PACKET_TYPE_ACK -> {
+                    val ack = PacketUtils.parseAckPacket(packet)
+                    Log.d(TAG, "Received photo ACK: $ack")
+                    photoResponseChannel.trySend(PhotoTransferResponse.Ack(ack))
+                }
+                PhotoTransferConstants.PACKET_TYPE_RETRY -> {
+                    val chunkIndex = PacketUtils.parseRetryPacket(packet)
+                    Log.d(TAG, "Received photo RETRY: chunk=$chunkIndex")
+                    photoResponseChannel.trySend(PhotoTransferResponse.Retry(chunkIndex))
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse photo transfer response", e)
+        }
+    }
+
+    private suspend fun processCompleteJsonMessages(messageBuffer: StringBuilder) {
+        var delimiterIndex: Int
+        while (messageBuffer.indexOf(MESSAGE_DELIMITER).also { delimiterIndex = it } >= 0) {
+            val messageStr = messageBuffer.substring(0, delimiterIndex)
+            messageBuffer.delete(0, delimiterIndex + MESSAGE_DELIMITER.length)
+
+            if (messageStr.isNotBlank()) {
+                parseAndEmitMessage(messageStr)
+            }
         }
     }
     
@@ -511,6 +813,9 @@ class BluetoothSppClient(
                 if (type == MessageType.HEARTBEAT_ACK) {
                     onHeartbeatAckReceived()
                 }
+                if (type == MessageType.HANDSHAKE_ACK) {
+                    handshakeAckChannel.trySend(Unit)
+                }
                 
                 val message = Message(
                     type = type,
@@ -545,6 +850,7 @@ class BluetoothSppClient(
         heartbeatJob = null
         
         closeSocket()
+        clearPendingPhotoTransferResponses()
         
         _connectionState.value = BluetoothClientState.DISCONNECTED
         _connectedDeviceName.value = null
@@ -599,6 +905,10 @@ class BluetoothSppClient(
         inputStream = null
         outputStream = null
         socket = null
+        photoResponseBuffer.reset()
+        parsingPhotoResponse = false
+        expectedPhotoResponseLength = 0
+        clearPendingHandshakeAcks()
         
         Log.d(TAG, "Socket closed and resources released")
     }
@@ -627,4 +937,29 @@ class BluetoothSppClient(
      */
     val connectedSocket: BluetoothSocket?
         get() = if (_connectionState.value == BluetoothClientState.CONNECTED) socket else null
+
+    fun createPhotoTransferProtocol(
+        onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }
+    ): PhotoTransferProtocol? {
+        val activeSocket = connectedSocket ?: return null
+        return PhotoTransferProtocol(
+            bluetoothSocket = activeSocket,
+            onProgress = onProgress,
+            receiveResponse = { photoResponseChannel.receive() },
+            clearPendingResponses = { clearPendingPhotoTransferResponses() },
+            writePacketOverride = { packet -> writeRawBytes(packet) }
+        )
+    }
+
+    private fun clearPendingPhotoTransferResponses() {
+        while (photoResponseChannel.tryReceive().isSuccess) {
+            // Drain stale ACK/RETRY packets from a previous transfer.
+        }
+    }
+
+    private fun clearPendingHandshakeAcks() {
+        while (handshakeAckChannel.tryReceive().isSuccess) {
+            // Drain stale handshake acknowledgements from a previous socket.
+        }
+    }
 }

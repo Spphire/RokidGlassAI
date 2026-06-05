@@ -7,8 +7,6 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp)
-    alias(libs.plugins.kotlin.serialization)
     jacoco
 }
 
@@ -23,6 +21,8 @@ android {
         }
     }
     fun localProperty(name: String): String? = localProps.getProperty(name)?.takeIf { it.isNotBlank() }
+    fun buildConfigString(value: String): String =
+        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     val releaseStoreFile = localProperty("RELEASE_STORE_FILE")
     val releaseStorePassword = localProperty("RELEASE_STORE_PASSWORD")
@@ -44,11 +44,21 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // API Keys - Read from local.properties, do not hardcode.
-        val geminiKey = localProps.getProperty("GEMINI_API_KEY", "")
-        val openaiKey = localProps.getProperty("OPENAI_API_KEY", "")
-        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiKey\"")
-        buildConfigField("String", "OPENAI_API_KEY", "\"$openaiKey\"")
+        val codexRelayUrl = localProps.getProperty("CODEX_RELAY_URL", "http://8.209.234.8:8080")
+        val codexRelayApiKey = localProps.getProperty(
+            "CODEX_RELAY_API_KEY",
+            ""
+        )
+        val codexRelayModel = localProps.getProperty("CODEX_RELAY_MODEL", "gpt-5.5")
+        val defaultVisionPrompt = localProps.getProperty(
+            "DEFAULT_VISION_PROMPT",
+            "\u5e2e\u6211\u56de\u7b54\u56fe\u4e2d\u7684\u9898\u76ee\uff1a\u5982\u679c\u662f\u5ba2\u89c2\u9898\uff0c\u4ec5\u7ed9\u51fa\u6b63\u786e\u9009\u9879\u4ee5\u53ca\u4e00\u53e5\u8bdd\u7684\u89e3\u91ca\uff1b\u5982\u679c\u662f\u4e3b\u89c2\u9898\uff0c\u5206\u70b9\u7cbe\u7b80\u56de\u7b54\u53bb\u9664AI\u5473\u5e76\u4ee5\u7814\u7a76\u751f\u7684\u53e3\u543b"
+        )
+
+        buildConfigField("String", "CODEX_RELAY_URL", buildConfigString(codexRelayUrl))
+        buildConfigField("String", "CODEX_RELAY_API_KEY", buildConfigString(codexRelayApiKey))
+        buildConfigField("String", "CODEX_RELAY_MODEL", buildConfigString(codexRelayModel))
+        buildConfigField("String", "DEFAULT_VISION_PROMPT", buildConfigString(defaultVisionPrompt))
     }
 
     signingConfigs {
@@ -80,22 +90,21 @@ android {
             }
         }
     }
-    
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    
+
     buildFeatures {
         compose = true
         buildConfig = true
     }
-    
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.10"
     }
-    
-    // 16KB page alignment for Android 15+ compatibility
+
     packaging {
         jniLibs {
             useLegacyPackaging = false
@@ -130,74 +139,23 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
-    // Common module
     implementation(project(":common"))
-    
-    // AndroidX Core
+
     implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.activity:activity-compose:1.12.2")
-    
-    // Compose
+
     implementation(platform("androidx.compose:compose-bom:2026.01.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    
-    // Coroutines
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    
-    // Google AI (Gemini)
-    implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
-    
-    // OkHttp for API calls
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
-    
-    // Gson for JSON
-    implementation("com.google.code.gson:gson:2.13.2")
-    
-    // Bluetooth
-    implementation("androidx.bluetooth:bluetooth:1.0.0-alpha02")
-    
-    // Rokid CXR-M SDK (Mobile SDK - via Maven)
-    // Used for connecting to glasses, device control, and photo capture
-    implementation("com.rokid.cxr:client-m:1.0.4")
-    
-    // CXR SDK required dependencies
-    implementation("com.squareup.retrofit2:retrofit:3.0.0")
-    implementation("com.squareup.retrofit2:converter-gson:3.0.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:5.3.2")
-    implementation("com.squareup.okio:okio:3.16.4")
-    
-    // DataStore for preferences
-    implementation("androidx.datastore:datastore-preferences:1.2.0")
-    
-    // Security Crypto for encrypted SharedPreferences
-    implementation("androidx.security:security-crypto:1.1.0")
-    
-    // Coil for image loading in Compose
-    implementation("io.coil-kt:coil-compose:2.7.0")
-    
-    // Room Database for conversation persistence
-    implementation("androidx.room:room-runtime:2.8.4")
-    implementation("androidx.room:room-ktx:2.8.4")
-    ksp(libs.room.compiler)
-    
-    // Kotlin Serialization
-    implementation(libs.kotlinx.serialization.json)
-    
-    // Navigation Compose
-    implementation("androidx.navigation:navigation-compose:2.9.6")
-    
-    // Debug
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    // Unit Test
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
@@ -206,12 +164,10 @@ dependencies {
     testImplementation(libs.truth)
     testImplementation(libs.androidx.test.core)
 
-    // Android Instrumented Test
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.mockk.android)
     androidTestImplementation(libs.okhttp.mockwebserver)
-    androidTestImplementation("androidx.room:room-testing:2.8.4")
 }

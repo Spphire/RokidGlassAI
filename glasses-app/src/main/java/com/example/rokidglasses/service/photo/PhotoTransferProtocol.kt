@@ -11,10 +11,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.IOException
-import java.io.InputStream
 import java.io.OutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+
+sealed class PhotoTransferResponse {
+    data class Ack(val data: AckPacketData) : PhotoTransferResponse()
+    data class Retry(val chunkIndex: Int) : PhotoTransferResponse()
+}
 
 /**
  * Photo Transfer Protocol - Glasses Side (Sender)
@@ -35,13 +37,14 @@ import java.nio.ByteOrder
  */
 class PhotoTransferProtocol(
     private val bluetoothSocket: BluetoothSocket,
-    private val onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }
+    private val onProgress: (current: Int, total: Int) -> Unit = { _, _ -> },
+    private val receiveResponse: (suspend () -> PhotoTransferResponse)? = null,
+    private val clearPendingResponses: (() -> Unit)? = null,
+    private val writePacketOverride: (suspend (ByteArray) -> Unit)? = null,
+    private val responseTimeoutMs: Long = PhotoTransferConstants.ACK_TIMEOUT_MS
 ) {
     companion object {
         private const val TAG = "PhotoTransferProtocol"
-        
-        // Read buffer size for ACK responses
-        private const val ACK_BUFFER_SIZE = 64
     }
     
     // Transfer state flow
@@ -57,8 +60,8 @@ class PhotoTransferProtocol(
     private val outputStream: OutputStream?
         get() = bluetoothSocket.outputStream
     
-    private val inputStream: InputStream?
-        get() = bluetoothSocket.inputStream
+    private val reliableMode: Boolean
+        get() = receiveResponse != null
     
     /**
      * Send photo data to the connected phone.
@@ -78,7 +81,11 @@ class PhotoTransferProtocol(
         try {
             // Validate socket connection
             if (!bluetoothSocket.isConnected) {
-                return@withContext Result.failure(IOException("Bluetooth socket not connected"))
+                return@withContext failTransfer(IOException("Bluetooth socket not connected"))
+            }
+
+            if (imageData.isEmpty()) {
+                return@withContext failTransfer(IllegalArgumentException("Photo data is empty"))
             }
             
             // Reset statistics
@@ -90,6 +97,7 @@ class PhotoTransferProtocol(
             val md5 = PacketUtils.calculateMD5(imageData)
             val chunks = PacketUtils.splitIntoChunks(imageData)
             val totalChunks = chunks.size
+            clearPendingResponses?.invoke()
             
             Log.d(TAG, "Starting photo transfer: ${imageData.size} bytes, $totalChunks chunks, MD5=${PacketUtils.md5ToHexString(md5)}")
             
@@ -97,9 +105,9 @@ class PhotoTransferProtocol(
             _transferState.value = PhotoTransferState.InProgress(0, totalChunks, 0, imageData.size.toLong())
             
             // Step 1: Send START packet
-            val startResult = sendStartPacket(imageData.size, totalChunks, md5)
+            val startResult = sendStartPacketWithRetry(imageData.size, totalChunks, md5)
             if (startResult.isFailure) {
-                return@withContext Result.failure(startResult.exceptionOrNull()!!)
+                return@withContext failTransfer(startResult.exceptionOrNull()!!)
             }
             
             // Step 2: Send DATA packets
@@ -108,7 +116,7 @@ class PhotoTransferProtocol(
                 if (dataResult.isFailure) {
                     // Send failure END packet
                     sendEndPacket(PhotoTransferConstants.STATUS_ERROR)
-                    return@withContext Result.failure(dataResult.exceptionOrNull()!!)
+                    return@withContext failTransfer(dataResult.exceptionOrNull()!!)
                 }
                 
                 // Update progress
@@ -128,7 +136,7 @@ class PhotoTransferProtocol(
             // Step 3: Send END packet
             val endResult = sendEndPacket(PhotoTransferConstants.STATUS_SUCCESS)
             if (endResult.isFailure) {
-                return@withContext Result.failure(endResult.exceptionOrNull()!!)
+                return@withContext failTransfer(endResult.exceptionOrNull()!!)
             }
             
             // Calculate statistics
@@ -156,22 +164,61 @@ class PhotoTransferProtocol(
             Result.failure(e)
         }
     }
+
+    private fun <T> failTransfer(error: Throwable): Result<T> {
+        _transferState.value = PhotoTransferState.Error(error.message ?: "Unknown error")
+        return Result.failure(error)
+    }
     
     /**
      * Send START packet to initiate transfer.
      */
+    private suspend fun sendStartPacketWithRetry(totalSize: Int, totalChunks: Int, md5: ByteArray): Result<Unit> {
+        val maxAttempts = if (reliableMode) PhotoTransferConstants.MAX_RETRY_COUNT + 1 else 1
+        var attempts = 0
+
+        while (attempts < maxAttempts) {
+            attempts++
+
+            val result = sendStartPacket(totalSize, totalChunks, md5)
+            if (result.isFailure) {
+                retryCount++
+                delay(100)
+                continue
+            }
+
+            if (!reliableMode) {
+                return Result.success(Unit)
+            }
+
+            when (val response = waitForExpectedResponse(expectedChunkIndex = 0, label = "START")) {
+                is PhotoTransferResponse.Ack -> {
+                    if (response.data.isSuccess) {
+                        return Result.success(Unit)
+                    }
+                    Log.w(TAG, "START ACK returned ${PacketUtils.getStatusName(response.data.status)}")
+                }
+                is PhotoTransferResponse.Retry -> {
+                    Log.w(TAG, "START retry requested")
+                }
+                null -> {
+                    Log.w(TAG, "START ACK timeout")
+                }
+            }
+
+            retryCount++
+            delay(100)
+        }
+
+        return Result.failure(IOException("Failed to start photo transfer after $maxAttempts attempts"))
+    }
+
     private suspend fun sendStartPacket(totalSize: Int, totalChunks: Int, md5: ByteArray): Result<Unit> {
         return try {
             val packet = PacketUtils.createStartPacket(totalSize, totalChunks, md5)
-            
-            outputStream?.write(packet)
-            outputStream?.flush()
+            writePacketBytes(packet)
             
             Log.d(TAG, "Sent START packet: size=$totalSize, chunks=$totalChunks")
-            
-            // Wait for ACK (optional, for reliable mode)
-            // Currently using fire-and-forget for START packet
-            
             Result.success(Unit)
         } catch (e: IOException) {
             Log.e(TAG, "Failed to send START packet", e)
@@ -188,9 +235,10 @@ class PhotoTransferProtocol(
         data: ByteArray,
         totalChunks: Int
     ): Result<Unit> {
+        val maxAttempts = if (reliableMode) PhotoTransferConstants.MAX_RETRY_COUNT + 1 else 1
         var attempts = 0
         
-        while (attempts < PhotoTransferConstants.MAX_RETRY_COUNT) {
+        while (attempts < maxAttempts) {
             attempts++
             
             val result = sendDataPacket(chunkIndex, data)
@@ -200,24 +248,43 @@ class PhotoTransferProtocol(
                 delay(100) // Brief delay before retry
                 continue
             }
-            
-            // For streaming mode (no ACK), return success immediately
-            // For reliable mode, wait for ACK here
-            return Result.success(Unit)
+
+            if (!reliableMode) {
+                return Result.success(Unit)
+            }
+
+            when (val response = waitForExpectedResponse(chunkIndex, label = "DATA")) {
+                is PhotoTransferResponse.Ack -> {
+                    if (response.data.isSuccess) {
+                        return Result.success(Unit)
+                    }
+                    Log.w(
+                        TAG,
+                        "Chunk $chunkIndex ACK returned ${PacketUtils.getStatusName(response.data.status)}, attempt $attempts"
+                    )
+                }
+                is PhotoTransferResponse.Retry -> {
+                    Log.w(TAG, "Chunk $chunkIndex retry requested, attempt $attempts")
+                }
+                null -> {
+                    Log.w(TAG, "Chunk $chunkIndex ACK timeout, attempt $attempts")
+                }
+            }
+
+            retryCount++
+            delay(100)
         }
         
-        return Result.failure(IOException("Failed to send chunk $chunkIndex after ${PhotoTransferConstants.MAX_RETRY_COUNT} attempts"))
+        return Result.failure(IOException("Failed to send chunk $chunkIndex after $maxAttempts attempts"))
     }
     
     /**
      * Send a single DATA packet.
      */
-    private fun sendDataPacket(chunkIndex: Int, data: ByteArray): Result<Unit> {
+    private suspend fun sendDataPacket(chunkIndex: Int, data: ByteArray): Result<Unit> {
         return try {
             val packet = PacketUtils.createDataPacket(chunkIndex, data)
-            
-            outputStream?.write(packet)
-            outputStream?.flush()
+            writePacketBytes(packet)
             
             Log.v(TAG, "Sent DATA packet: chunk=$chunkIndex, size=${data.size}")
             
@@ -231,12 +298,10 @@ class PhotoTransferProtocol(
     /**
      * Send END packet to mark transfer completion.
      */
-    private fun sendEndPacket(status: Byte): Result<Unit> {
+    private suspend fun sendEndPacket(status: Byte): Result<Unit> {
         return try {
             val packet = PacketUtils.createEndPacket(status)
-            
-            outputStream?.write(packet)
-            outputStream?.flush()
+            writePacketBytes(packet)
             
             Log.d(TAG, "Sent END packet: status=${PacketUtils.getStatusName(status)}")
             
@@ -246,62 +311,55 @@ class PhotoTransferProtocol(
             Result.failure(e)
         }
     }
+
+    private suspend fun writePacketBytes(packet: ByteArray) {
+        val writer = writePacketOverride
+        if (writer != null) {
+            writer(packet)
+            return
+        }
+
+        outputStream?.write(packet)
+        outputStream?.flush()
+    }
     
-    /**
-     * Wait for ACK response from receiver.
-     * Used in reliable transfer mode.
-     * 
-     * @param expectedChunkIndex The chunk index we're expecting ACK for
-     * @return AckPacketData if received, null if timeout or error
-     */
-    private suspend fun waitForAck(expectedChunkIndex: Int): AckPacketData? = withContext(Dispatchers.IO) {
-        try {
-            val buffer = ByteArray(ACK_BUFFER_SIZE)
-            
-            // Set socket timeout for ACK
-            // Note: BluetoothSocket doesn't support setSoTimeout directly
-            // We use withTimeout instead
-            
-            withTimeout(PhotoTransferConstants.ACK_TIMEOUT_MS) {
-                val bytesRead = inputStream?.read(buffer) ?: -1
-                
-                if (bytesRead >= PhotoTransferConstants.ACK_PACKET_SIZE) {
-                    val packetType = PacketUtils.parsePacketType(buffer)
-                    
-                    when (packetType) {
-                        PhotoTransferConstants.PACKET_TYPE_ACK -> {
-                            val ackData = PacketUtils.parseAckPacket(buffer.copyOf(PhotoTransferConstants.ACK_PACKET_SIZE))
-                            Log.d(TAG, "Received ACK: $ackData")
-                            
-                            if (ackData.chunkIndex == expectedChunkIndex) {
-                                return@withTimeout ackData
-                            } else {
-                                Log.w(TAG, "ACK for wrong chunk: expected=$expectedChunkIndex, got=${ackData.chunkIndex}")
-                                null
-                            }
-                        }
-                        PhotoTransferConstants.PACKET_TYPE_RETRY -> {
-                            val retryIndex = PacketUtils.parseRetryPacket(buffer.copyOf(PhotoTransferConstants.RETRY_PACKET_SIZE))
-                            Log.d(TAG, "Received RETRY request for chunk $retryIndex")
-                            // Return null to trigger retry
-                            null
-                        }
-                        else -> {
-                            Log.w(TAG, "Unexpected packet type: ${PacketUtils.getPacketTypeName(packetType)}")
-                            null
-                        }
+    private suspend fun waitForExpectedResponse(
+        expectedChunkIndex: Int,
+        label: String
+    ): PhotoTransferResponse? {
+        val receiver = receiveResponse ?: return null
+        val deadlineMs = System.currentTimeMillis() + responseTimeoutMs
+
+        while (true) {
+            val remainingMs = deadlineMs - System.currentTimeMillis()
+            if (remainingMs <= 0) return null
+
+            val response = withTimeoutOrNull(remainingMs) {
+                receiver()
+            } ?: return null
+
+            when (response) {
+                is PhotoTransferResponse.Ack -> {
+                    if (response.data.chunkIndex == expectedChunkIndex) {
+                        Log.d(TAG, "Received $label ACK: ${response.data}")
+                        return response
                     }
-                } else {
-                    Log.w(TAG, "Invalid ACK response size: $bytesRead")
-                    null
+                    Log.w(
+                        TAG,
+                        "Ignoring ACK for wrong chunk: expected=$expectedChunkIndex, got=${response.data.chunkIndex}"
+                    )
+                }
+                is PhotoTransferResponse.Retry -> {
+                    if (response.chunkIndex == expectedChunkIndex) {
+                        Log.d(TAG, "Received $label RETRY for chunk ${response.chunkIndex}")
+                        return response
+                    }
+                    Log.w(
+                        TAG,
+                        "Ignoring RETRY for wrong chunk: expected=$expectedChunkIndex, got=${response.chunkIndex}"
+                    )
                 }
             }
-        } catch (e: TimeoutCancellationException) {
-            Log.w(TAG, "ACK timeout for chunk $expectedChunkIndex")
-            null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error waiting for ACK", e)
-            null
         }
     }
     

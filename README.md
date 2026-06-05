@@ -1,379 +1,154 @@
-# Rokid AI Assistant
+# Rokid Photo AI
 
-> 📖 [繁體中文版](doc/zh-TW/README.md)
+Rokid Photo AI is a trimmed phone + glasses project for one task: capture an image on Rokid glasses, send it to the phone over Bluetooth SPP, ask a Codex++ relay vision model with a preset prompt, and show the answer back on the glasses.
 
-**AI-powered voice and vision assistant for Rokid AR glasses.**
+The phone app also has a direct camera test path, so you can verify the AI relay without wearing or connecting the glasses.
 
+## Current Scope
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/liangtinglin)
+In scope:
 
----
+- Glasses trigger photo capture from touch/key or a phone request.
+- Glasses compress the photo to the shared target profile and send it in Bluetooth chunks.
+- Phone receives, verifies, and calls the Codex++ relay `/v1/responses` endpoint.
+- Phone stores a preset prompt and adjustable AI parameters.
+- Phone camera can simulate the glasses image profile for relay testing.
+- Glasses display processing status, errors, and paged AI results.
 
-## 🚀 Quick Start (5 minutes)
+Out of scope:
 
-```bash
-# 1. Clone
-git clone https://github.com/your-repo/RokidAIAssistant.git && cd RokidAIAssistant
+- Voice input, STT, TTS, chat history, Room database, and multi-provider AI switching.
+- Standalone glasses-only AI inference.
+- Real-time video streaming or AR overlays.
 
-# 2. Configure API keys
-cp local.properties.template local.properties
-# Edit local.properties → Add your GEMINI_API_KEY (required)
+## Modules
 
-# 3. Build & Install
-./gradlew :phone-app:installDebug    # Install phone app
-./gradlew :glasses-app:installDebug  # Install glasses app (on Rokid device)
+```text
+RokidPhotoAI/
+  common/       Shared message types and Bluetooth photo packet protocol.
+  phone-app/    Android phone app: UI, foreground bridge, photo receiver, Codex++ relay client.
+  glasses-app/  Rokid glasses app: Bluetooth client, camera capture, compression, result display.
+  app/          Archived upstream integrated app kept only as reference; not included by Gradle.
 ```
 
-> **Minimum requirement**: Only `GEMINI_API_KEY` is needed to run. Get one at [Google AI Studio](https://ai.google.dev/).
+Gradle includes only `:common`, `:phone-app`, and `:glasses-app`.
 
----
+## Phone App
 
-## Scope
+Main functions:
 
-### In Scope
+- Edit and persist the default vision prompt.
+- Tune request parameters: reasoning effort, verbosity, output tokens, upload image side, JPEG quality, and timeout.
+- Run `Take Phone Photo and Test AI`, which compresses the phone image like a glasses image before calling AI.
+- Run a foreground Bluetooth bridge service so the phone can keep receiving photos in the background.
+- Ask connected glasses to capture and analyze a new photo.
 
-- Voice-to-text transcription and AI chat on Rokid AR glasses
-- Photo capture from glasses camera with AI image analysis
-- Phone ↔ Glasses communication via Rokid CXR SDK
-- Multiple AI/STT provider support (Gemini, OpenAI, Anthropic, etc.)
-- Conversation history persistence
+Default prompt:
 
-### Out of Scope
-
-- Standalone glasses-only operation (phone required for AI processing)
-- Offline AI inference
-- Video streaming or real-time AR overlays
-
----
-
-## Features
-
-| Feature                 | Description                                                                                                                                                                                                                                |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 🎤 Voice Interaction    | Speak to AI through glasses or phone                                                                                                                                                                                                       |
-| 📷 Photo Analysis       | Capture images with glasses camera, get AI analysis                                                                                                                                                                                        |
-| 🎙️ Recording & Analysis | Record audio from phone or glasses with auto AI transcription and analysis                                                                                                                                                                 |
-| 🤖 Multi-AI Providers   | 14 providers: Gemini, OpenAI, Anthropic, DeepSeek, Groq, xAI, Alibaba (Qwen), Zhipu (GLM), Baidu, Perplexity, Moonshot (Kimi), Mistral, Gemini Live, Custom (OpenAI-compatible)                                                            |
-| 🎧 Multi-STT Providers  | 18 providers: Gemini, OpenAI Whisper, Groq Whisper, Deepgram, AssemblyAI, Azure Speech, iFLYTEK, Google Cloud STT, AWS Transcribe, Alibaba ASR, Tencent ASR, Baidu ASR, IBM Watson, Huawei SIS, Volcengine, Rev.ai, Speechmatics, Otter.ai |
-| 📱 Phone-Glasses Comm   | Via Rokid CXR SDK and Bluetooth SPP                                                                                                                                                                                                        |
-| 💬 Conversation History | Room database persistence                                                                                                                                                                                                                  |
-| 🌍 Multi-Language       | 13 languages: English, 简体中文, 繁體中文, 日本語, 한국어, Español, Français, Italiano, Русский, Українська, العربية, Tiếng Việt, ไทย                                                                                                      |
-
----
-
-## Module / Directory Guide
-
-```
-RokidAIAssistant/
-├── phone-app/                    # 📱 Phone app (main AI hub)
-│   └── src/main/java/.../rokidphone/
-│       ├── MainActivity.kt       # Entry point
-│       ├── service/ai/           # AI provider implementations
-│       ├── service/stt/          # STT provider implementations
-│       ├── service/cxr/          # CXR SDK manager
-│       ├── data/db/              # Room database
-│       ├── ui/                   # Compose UI screens
-│       └── viewmodel/            # ViewModels
-│
-├── glasses-app/                  # 👓 Glasses app (display/input)
-│   └── src/main/java/.../rokidglasses/
-│       ├── MainActivity.kt       # Entry point
-│       ├── service/photo/        # Camera service
-│       ├── ui/                   # Compose UI
-│       └── viewmodel/            # GlassesViewModel
-│
-├── common/                       # 📦 Shared protocol library
-│   └── src/main/java/.../rokidcommon/
-│       ├── Constants.kt          # Shared constants
-│       └── protocol/             # Message, MessageType, ConnectionState
-│
-├── app/                          # 🧪 Original integrated app (dev only)
-├── doc/                          # 📚 Documentation
-└── gradle/libs.versions.toml     # Version catalog
+```text
+帮我回答图中的题目：如果是客观题，仅给出正确选项以及一句话的解释；如果是主观题，分点精简回答去除AI味并以研究生的口吻
 ```
 
-| Module        | App ID                     | Purpose                               |
-| ------------- | -------------------------- | ------------------------------------- |
-| `phone-app`   | `com.example.rokidphone`   | AI processing, STT, CXR SDK, database |
-| `glasses-app` | `com.example.rokidglasses` | Display, camera, wake word            |
-| `common`      | (library)                  | Shared protocol & constants           |
+## Glasses App
 
----
+Main functions:
 
-## Technology Stack
+- Select and connect to the paired phone over Bluetooth SPP.
+- Capture a photo from the glasses camera.
+- Compress to the shared photo profile.
+- Send `PHOTO_START`, `PHOTO_DATA`, and `PHOTO_END` packets.
+- Receive AI status/result messages and show them on the glasses UI.
 
-| Category    | Technology                   | Version              |
-| ----------- | ---------------------------- | -------------------- |
-| Language    | Kotlin                       | 2.2.10               |
-| Min SDK     | Android                      | 28 (9.0 Pie)         |
-| Target SDK  | Android                      | 34 (14)              |
-| Compile SDK | Android                      | 36                   |
-| Build       | Gradle + Kotlin DSL          | AGP 9.0 / Gradle 9.3 |
-| UI          | Jetpack Compose + Material 3 | BOM 2026.01.00       |
-| Async       | Kotlin Coroutines            | 1.10.2               |
-| Database    | Room                         | 2.8.4                |
-| Networking  | Retrofit + OkHttp            | 3.0 / 5.3            |
-| Rokid SDK   | CXR client-m                 | 1.0.4                |
+The current sender path is best-effort for normal transfers. The phone can emit ACK/RETRY packets, but full sender-side retransmission is still a robustness item to finish before field use.
 
----
+## AI Relay Config
 
-## Build & Run
-
-### Prerequisites
-
-- **Android Studio**: Ladybug (2024.2) or later
-- **JDK**: 21 (recommended for AGP 9 and CI)
-- **Android SDK**: API 36 installed
-
-### Environment Setup
-
-```bash
-# Copy template and edit with your keys
-cp local.properties.template local.properties
-```
-
-### CI: Inject a Single `sn_auth_file.*` Resource
-
-The app enforces a single-source SN auth strategy in `app/src/main/res/raw/`.
-Keep exactly one file named `sn_auth_file.*` (for example: `sn_auth_file.lc`).
-
-```yaml
-- name: Prepare SN auth resource (single source)
-   shell: bash
-   run: |
-      mkdir -p app/src/main/res/raw
-      rm -f app/src/main/res/raw/sn_auth_file.*
-      echo "${{ secrets.SN_AUTH_FILE_BASE64 }}" | base64 --decode > app/src/main/res/raw/sn_auth_file.lc
-
-- name: Build app module
-   run: ./gradlew :app:assembleDebug --no-daemon
-```
-
-Notes:
-
-- Store the SN file as base64 in `SN_AUTH_FILE_BASE64` (GitHub Secret).
-- Do not commit `sn_auth_file.*` into version control.
-- Build will fail fast if multiple `sn_auth_file.*` files exist.
-
-**Required keys in `local.properties`:**
+The phone relay client reads values from `local.properties`, with debug defaults in `phone-app/build.gradle.kts`.
 
 ```properties
-# Required
-GEMINI_API_KEY=your_gemini_api_key
-
-# Required for glasses connection
-ROKID_CLIENT_SECRET=your_rokid_secret_without_hyphens
-
-# Optional
-OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key
+CODEX_RELAY_URL=http://8.209.234.8:8080
+CODEX_RELAY_API_KEY=sk-your-codex-relay-key
+CODEX_RELAY_MODEL=gpt-5.5
+DEFAULT_VISION_PROMPT=帮我回答图中的题目：如果是客观题，仅给出正确选项以及一句话的解释；如果是主观题，分点精简回答去除AI味并以研究生的口吻
 ```
 
-### Gradle Commands
+The request uses:
 
-```bash
-# Build all modules (debug)
-./gradlew assembleDebug
+- Endpoint: `POST {CODEX_RELAY_URL}/v1/responses`
+- Authorization: `Bearer {CODEX_RELAY_API_KEY}`
+- Input content: `input_text` prompt plus `input_image` data URL
+- Tunable fields: `reasoning.effort`, `text.verbosity`, `max_output_tokens`
 
-# Build specific module
-./gradlew :phone-app:assembleDebug
-./gradlew :glasses-app:assembleDebug
+## Photo Transfer Profile
 
-# Install to connected device
-./gradlew :phone-app:installDebug
-./gradlew :glasses-app:installDebug
+Shared defaults live in `common/src/main/java/com/example/rokidcommon/protocol/photo/PhotoTransferConstants.kt`.
 
-# Build release APK
-./gradlew assembleRelease
-
-# Clean build
-./gradlew clean
+```text
+Target image: 1280x720 max fit
+JPEG quality: 70
+Max compressed size target: 200 KB
+Chunk size: 4096 bytes
+Transfer timeout: 60 s
+ACK timeout: 5 s
 ```
 
-### APK Output Locations
+The phone camera test uses the same target dimensions, JPEG quality, max size, and chunk estimate to approximate the glasses path before sending to AI.
 
+## Build
+
+On Windows with Android Studio JBR:
+
+```powershell
+$env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
+$env:ANDROID_HOME='C:\Users\yibo\AppData\Local\Android\Sdk'
+$env:Path="$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:Path"
+.\gradlew.bat --dependency-verification=off :common:testDebugUnitTest :phone-app:testDebugUnitTest :glasses-app:testDebugUnitTest :phone-app:assembleDebug :glasses-app:assembleDebug
 ```
+
+APK outputs:
+
+```text
 phone-app/build/outputs/apk/debug/phone-app-debug.apk
-phone-app/build/outputs/apk/release/phone-app-release.apk
 glasses-app/build/outputs/apk/debug/glasses-app-debug.apk
-glasses-app/build/outputs/apk/release/glasses-app-release.apk
 ```
 
----
+Install the phone app only to the intended phone device, for example:
 
-## Debug vs Release
-
-| Aspect       | Debug            | Release                       |
-| ------------ | ---------------- | ----------------------------- |
-| Minification | ❌ Disabled      | ✅ Enabled (ProGuard)         |
-| Debuggable   | ✅ Yes           | ❌ No                         |
-| Signing      | Debug keystore   | Release keystore (required)   |
-| BuildConfig  | API keys visible | API keys visible (obfuscated) |
-| Performance  | Slower           | Optimized                     |
-
-### ProGuard Rules
-
-- `phone-app/proguard-rules.pro` - Keeps Gemini, OkHttp, Gson, common protocol
-- `glasses-app/proguard-rules.pro` - Keeps CXR SDK, common protocol
-
----
-
-## Testing
-
-Unit and integration test suites are implemented for protocol, service, factory, and data-layer paths.
-
-### Run Tests
-
-```bash
-# Cross-module unit tests
-./gradlew :common:testDebugUnitTest :phone-app:testDebugUnitTest :glasses-app:testDebugUnitTest
-
-# Targeted suites
-./gradlew :common:testDebugUnitTest --tests "com.example.rokidcommon.protocol.*"
-./gradlew :phone-app:testDebugUnitTest --tests "com.example.rokidphone.service.ai.*"
-./gradlew :phone-app:testDebugUnitTest --tests "com.example.rokidphone.service.stt.*"
-
-# Phone instrumented tests (Room/data-layer)
-./gradlew :phone-app:connectedDebugAndroidTest
+```powershell
+adb -s 10AF1F0PST00419 install -r -g phone-app\build\outputs\apk\debug\phone-app-debug.apk
+adb -s 10AF1F0PST00419 shell monkey -p com.example.rokidphone 1
 ```
 
-### Manual Testing Checklist
+## Manual Test Checklist
 
-1. **Phone App**
-   - [ ] Launch app, verify Settings screen loads
-   - [ ] Configure AI provider (Gemini), test text chat
-   - [ ] Test voice input from phone microphone
-   - [ ] Verify conversation history persists after restart
+1. Phone-only AI path
+   - Launch phone app.
+   - Confirm URL/model/prompt are shown.
+   - Set `Fast` preset first: reasoning `minimal`, timeout `25s`.
+   - Tap `Take Phone Photo and Test AI`.
+   - Verify the status changes from reading photo, to glasses simulation, to calling AI, then result or timeout.
 
-2. **Glasses App**
-   - [ ] Install on Rokid glasses, verify UI displays
-   - [ ] Test camera photo capture
-   - [ ] Verify photo transfer to phone
+2. Timeout/quality path
+   - For `medium` or `high` reasoning, raise timeout to `60-120s`.
+   - Check logcat for `AI request start` and `AI request done`.
+   - Compare `uploadBytes`, `httpMs`, and `totalMs`.
 
-3. **Integration**
-   - [ ] Pair phone with glasses via CXR SDK
-   - [ ] Test voice command from glasses → AI response displayed
-   - [ ] Test photo capture → AI analysis → result displayed
+3. Glasses integration path
+   - Pair phone and glasses over Bluetooth.
+   - Start the phone bridge service.
+   - Connect glasses to the phone.
+   - Trigger capture on glasses or press `Ask Glasses to Capture and Analyze` on phone.
+   - Verify photo transfer progress, AI status, and result display.
 
-### Running Instrumentation Tests
+Useful logcat filters:
 
-```bash
-./gradlew :phone-app:connectedAndroidTest
-./gradlew :glasses-app:connectedAndroidTest
+```powershell
+adb -s 10AF1F0PST00419 logcat -d -v time -s MainActivity CodexRelayVisionClient PhoneAIService BluetoothSppManager BluetoothPhotoReceiver
 ```
 
----
+## Runtime Notes
 
-## Common Developer Tasks
-
-### Add a New AI Provider
-
-1. Create implementation in `phone-app/src/.../service/ai/YourProvider.kt`
-2. Implement `AiServiceProvider` interface (see [ARCHITECTURE.md](doc/ARCHITECTURE.md#ai-service-provider-interface))
-3. Register in `AiServiceFactory.kt`
-4. Add to `AiProvider` enum in settings
-
-### Add a New Screen (Compose)
-
-1. Create screen composable in `phone-app/src/.../ui/yourscreen/YourScreen.kt`
-2. Create ViewModel in `phone-app/src/.../viewmodel/YourViewModel.kt`
-3. Add route to `phone-app/src/.../ui/navigation/AppNavigation.kt`
-
-### Add a New Permission
-
-1. Add to `AndroidManifest.xml`:
-   ```xml
-   <uses-permission android:name="android.permission.YOUR_PERMISSION" />
-   ```
-2. Request at runtime (for dangerous permissions) in Activity/ViewModel
-
----
-
-## FAQ & Troubleshooting
-
-### Build Issues
-
-**Q: Build fails with "API key not found"**
-
-```
-A: Ensure local.properties exists and contains GEMINI_API_KEY.
-   Check the file is in project root, not in a module folder.
-```
-
-**Q: Gradle sync fails with version errors**
-
-```
-A: Ensure Android Studio has SDK 36 installed.
-   File → Settings → SDK Manager → Install API 36.
-```
-
-**Q: JDK version mismatch**
-
-```
-A: Project requires JDK 21 (matches AGP 9 and CI).
-   File → Settings → Build → Gradle → Gradle JDK → Select JDK 21.
-```
-
-### Runtime Issues
-
-**Q: App crashes on launch**
-
-```
-A: Check Logcat for missing API key errors.
-   Ensure all required permissions are granted.
-```
-
-**Q: Cannot connect to glasses**
-
-```
-A: 1. Verify ROKID_CLIENT_SECRET is set (without hyphens)
-   2. Enable Bluetooth on both devices
-   3. Ensure glasses are in pairing mode
-```
-
-**Q: AI responses are empty**
-
-```
-A: 1. Verify API key is valid and has quota
-   2. Check network connectivity
-   3. Review Logcat for API error responses
-```
-
-### Release Issues
-
-**Q: Release build fails with signing error**
-
-```
-A: Create a release keystore and configure in build.gradle.kts:
-   signingConfigs {
-       create("release") {
-           storeFile = file("path/to/keystore.jks")
-           storePassword = "password"
-           keyAlias = "alias"
-           keyPassword = "password"
-       }
-   }
-```
-
-**Q: ProGuard removes required classes**
-
-```
-A: Add keep rules to proguard-rules.pro:
-   -keep class com.your.package.** { *; }
-```
-
----
-
-## Documentation
-
-| Document                                                      | Description                                  |
-| ------------------------------------------------------------- | -------------------------------------------- |
-| [API Settings Guide](doc/API_SETTINGS.md)                     | Complete API configuration for all providers |
-| [Architecture Overview](doc/ARCHITECTURE.md)                  | System design, data flow, component details  |
-| [STT Implementation Status](doc/STT_IMPLEMENTATION_STATUS.md) | Complete status of all 18 STT providers      |
-
----
-
-## License
-
-This project is proprietary software.
+- The phone activity is locked to portrait.
+- The phone bridge runs as a foreground service and requests battery optimization exemption.
+- If ADB only shows another device or `offline`, reconnect the iQOO and confirm USB debugging authorization before reading logs or installing.
+- Installs should be explicit and targeted; avoid installing to unrelated connected devices.

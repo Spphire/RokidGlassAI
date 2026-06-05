@@ -3,6 +3,9 @@ package com.example.rokidphone.service
 import androidx.test.core.app.ApplicationProvider
 import com.example.rokidcommon.protocol.Message
 import com.example.rokidcommon.protocol.MessageType
+import com.example.rokidcommon.protocol.photo.PacketUtils
+import com.example.rokidcommon.protocol.photo.PhotoTransferConstants
+import com.example.rokidphone.service.photo.BluetoothPhotoReceiver
 import com.google.common.truth.Truth.assertThat
 import io.mockk.*
 import kotlinx.coroutines.*
@@ -18,6 +21,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.util.UUID
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
 class BluetoothSppManagerTest {
@@ -116,7 +120,7 @@ class BluetoothSppManagerTest {
     @Test
     fun `sendMessage returns false when not connected`() = scope.runTest {
         // 測試：未連線時 sendMessage 回傳 false
-        val message = Message(type = MessageType.AI_RESPONSE_TEXT, payload = "Hello")
+        val message = Message.capturePhoto()
         val result = manager.sendMessage(message)
         assertThat(result).isFalse()
     }
@@ -253,6 +257,36 @@ class BluetoothSppManagerTest {
         isDisconnectingField.setBoolean(manager, false)
     }
 
+    @Test
+    fun `disconnect clears binary parser state and connected device name`() {
+        val parsingField = BluetoothSppManager::class.java.getDeclaredField("parsingBinaryPacket")
+        parsingField.isAccessible = true
+        parsingField.setBoolean(manager, true)
+
+        val expectedField = BluetoothSppManager::class.java.getDeclaredField("expectedPacketLength")
+        expectedField.isAccessible = true
+        expectedField.setInt(manager, 2048)
+
+        val pendingTypeField = BluetoothSppManager::class.java.getDeclaredField("pendingBinaryPacketType")
+        pendingTypeField.isAccessible = true
+        pendingTypeField.set(manager, PhotoTransferConstants.PACKET_TYPE_DATA)
+
+        val nameField = BluetoothSppManager::class.java.getDeclaredField("_connectedDeviceName")
+        nameField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (nameField.get(manager) as kotlinx.coroutines.flow.MutableStateFlow<String?>).value = "Test Glasses"
+
+        setConnectionState(BluetoothConnectionState.CONNECTED)
+
+        manager.disconnect(restartListening = false)
+
+        assertThat(manager.connectionState.value).isEqualTo(BluetoothConnectionState.DISCONNECTED)
+        assertThat(manager.connectedDeviceName.value).isNull()
+        assertThat(parsingField.getBoolean(manager)).isFalse()
+        assertThat(expectedField.getInt(manager)).isEqualTo(0)
+        assertThat(pendingTypeField.get(manager)).isNull()
+    }
+
     // ==================== getPacketLength (pure function) ====================
 
     @Test
@@ -263,11 +297,11 @@ class BluetoothSppManagerTest {
         )
         method.isAccessible = true
 
-        val startType: Byte = 0x01  // PhotoTransferConstants.PACKET_TYPE_START
+        val startType: Byte = PhotoTransferConstants.PACKET_TYPE_START
         val data = byteArrayOf(startType)
         val result = method.invoke(manager, startType, data, 0) as Int
 
-        assertThat(result).isEqualTo(25) // START_PACKET_SIZE
+        assertThat(result).isEqualTo(PhotoTransferConstants.START_PACKET_SIZE)
     }
 
     @Test
@@ -278,11 +312,94 @@ class BluetoothSppManagerTest {
         )
         method.isAccessible = true
 
-        val endType: Byte = 0x03  // PhotoTransferConstants.PACKET_TYPE_END
+        val endType: Byte = PhotoTransferConstants.PACKET_TYPE_END
         val data = byteArrayOf(endType)
         val result = method.invoke(manager, endType, data, 0) as Int
 
-        assertThat(result).isEqualTo(2) // END_PACKET_SIZE
+        assertThat(result).isEqualTo(PhotoTransferConstants.END_PACKET_SIZE)
+    }
+
+    @Test
+    fun `getPacketLength returns zero for split DATA header until length is available`() {
+        val method = BluetoothSppManager::class.java.getDeclaredMethod(
+            "getPacketLength", Byte::class.java, ByteArray::class.java, Int::class.java
+        )
+        method.isAccessible = true
+
+        val result = method.invoke(
+            manager,
+            PhotoTransferConstants.PACKET_TYPE_DATA,
+            byteArrayOf(PhotoTransferConstants.PACKET_TYPE_DATA),
+            0
+        ) as Int
+
+        assertThat(result).isEqualTo(0)
+    }
+
+    @Test
+    fun `processReceivedData keeps split DATA header pending`() = scope.runTest {
+        val packet = PacketUtils.createDataPacket(0, byteArrayOf(1, 2, 3, 4))
+        val messageBuffer = StringBuilder()
+
+        invokeProcessReceivedData(packet.copyOfRange(0, 2), messageBuffer)
+
+        assertThat(getBooleanField("parsingBinaryPacket")).isTrue()
+        assertThat(getIntField("expectedPacketLength")).isEqualTo(0)
+
+        invokeProcessReceivedData(packet.copyOfRange(2, packet.size), messageBuffer)
+
+        assertThat(getBooleanField("parsingBinaryPacket")).isFalse()
+        assertThat(getIntField("expectedPacketLength")).isEqualTo(0)
+    }
+
+    @Test
+    fun `processReceivedData separates json followed by photo packet in same read`() = scope.runTest {
+        val message = Message.displayText("ready")
+        val photo = byteArrayOf(10, 20, 30, 40)
+        val start = PacketUtils.createStartPacket(
+            totalSize = photo.size,
+            totalChunks = 1,
+            md5 = PacketUtils.calculateMD5(photo)
+        )
+        val combined = (message.toJson() + "\n").toByteArray(Charsets.UTF_8) + start
+        val messageBuffer = StringBuilder()
+        val messages = mutableListOf<Message>()
+        val collectJob = launch { manager.messageFlow.collect { messages.add(it) } }
+        val outputBytes = ByteArrayOutputStream()
+        setOutputStream(outputBytes)
+        runCurrent()
+
+        invokeProcessReceivedData(combined, messageBuffer)
+        withTimeout(1_000) {
+            while (messages.none { it.type == MessageType.DISPLAY_TEXT } ||
+                outputBytes.size() < PhotoTransferConstants.ACK_PACKET_SIZE
+            ) {
+                delay(10)
+            }
+        }
+
+        assertThat(messages.map { it.type }).contains(MessageType.DISPLAY_TEXT)
+        val ack = outputBytes.toByteArray()
+        assertThat(ack).hasLength(PhotoTransferConstants.ACK_PACKET_SIZE)
+        assertThat(PacketUtils.parseAckPacket(ack).isSuccess).isTrue()
+
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `findNextPhotoPacketOffset ignores message type bytes inside json`() {
+        val message = Message.heartbeat()
+        val payload = (message.toJson() + "\n").toByteArray(Charsets.UTF_8)
+        val method = BluetoothSppManager::class.java.getDeclaredMethod(
+            "findNextPhotoPacketOffset",
+            ByteArray::class.java,
+            Int::class.java
+        )
+        method.isAccessible = true
+
+        val result = method.invoke(manager, payload, 0) as Int
+
+        assertThat(result).isEqualTo(-1)
     }
 
     @Test
@@ -312,6 +429,24 @@ class BluetoothSppManagerTest {
         assertThat(serverSocketField.get(manager)).isNull()
     }
 
+    @Test
+    fun `stopListening moves listening state back to disconnected`() {
+        setConnectionState(BluetoothConnectionState.LISTENING)
+
+        manager.stopListening()
+
+        assertThat(manager.connectionState.value).isEqualTo(BluetoothConnectionState.DISCONNECTED)
+    }
+
+    @Test
+    fun `stopListening does not mark active connection disconnected`() {
+        setConnectionState(BluetoothConnectionState.CONNECTED)
+
+        manager.stopListening()
+
+        assertThat(manager.connectionState.value).isEqualTo(BluetoothConnectionState.CONNECTED)
+    }
+
     // ==================== getPairedDevices ====================
 
     @Test
@@ -334,5 +469,34 @@ class BluetoothSppManagerTest {
         val field = BluetoothSppManager::class.java.getDeclaredField("outputStream")
         field.isAccessible = true
         field.set(manager, outputStream)
+
+        val receiverField = BluetoothSppManager::class.java.getDeclaredField("photoReceiver")
+        receiverField.isAccessible = true
+        (receiverField.get(manager) as BluetoothPhotoReceiver).setOutputStream(outputStream)
+    }
+
+    private suspend fun invokeProcessReceivedData(data: ByteArray, messageBuffer: StringBuilder) {
+        val method = BluetoothSppManager::class.java.getDeclaredMethod(
+            "processReceivedData",
+            ByteArray::class.java,
+            StringBuilder::class.java,
+            kotlin.coroutines.Continuation::class.java
+        )
+        method.isAccessible = true
+        kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { cont ->
+            method.invoke(manager, data, messageBuffer, cont)
+        }
+    }
+
+    private fun getBooleanField(name: String): Boolean {
+        val field = BluetoothSppManager::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        return field.getBoolean(manager)
+    }
+
+    private fun getIntField(name: String): Int {
+        val field = BluetoothSppManager::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        return field.getInt(manager)
     }
 }

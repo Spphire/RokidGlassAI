@@ -1,48 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 網路權限 (API 呼叫) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    
-    <!-- WiFi 權限 (CXR SDK 需要) -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    
-    <!-- 位置權限 (藍牙掃描需要) -->
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    
-    <!-- 藍牙權限 (與手機通訊) -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    
-    <!-- 麥克風權限 (語音輸入) -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    
-    <!-- 相機權限 (拍照功能) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-    
-    <!-- 儲存權限 (照片暫存) -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" 
-        android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    
-    <!-- 螢幕常亮權限 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    
-    <!-- 前景服務權限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
-    
-    <!-- Rokid 系統權限 -->
     <uses-permission android:name="com.rokid.permission.GLASS_CONTROL" />
 
     <application
@@ -53,7 +24,7 @@
         android:largeHeap="false"
         android:supportsRtl="true"
         android:theme="@style/Theme.RokidGlasses">
-        
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -67,31 +38,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        
-        <!-- 語音喚醒背景服務 -->
-        <service
-            android:name=".service.WakeWordService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-        
-        <!-- Rokid 語音觸發服務 (備用) -->
-        <service
-            android:name=".service.VoiceTriggerService"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.rokid.action.VOICE_COMMAND" />
-            </intent-filter>
-        </service>
-        
-        <!-- 相機拍照服務 -->
+
         <service
             android:name=".service.photo.CameraService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="camera" />
-            
-    </application>
 
+    </application>
 </manifest>
