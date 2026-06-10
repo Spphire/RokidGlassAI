@@ -16,9 +16,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -31,6 +30,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -41,7 +42,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -136,22 +136,6 @@ class MainActivity : ComponentActivity() {
         )
 
         return when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_VOLUME_UP -> {
-                if (uiState.isPaginated) {
-                    viewModel.previousPage()
-                    true
-                } else {
-                    super.onKeyDown(keyCode, event)
-                }
-            }
-            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                if (uiState.isPaginated) {
-                    viewModel.nextPage()
-                    true
-                } else {
-                    super.onKeyDown(keyCode, event)
-                }
-            }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> true
             KeyEvent.KEYCODE_CAMERA,
             KeyEvent.KEYCODE_FOCUS,
@@ -183,14 +167,7 @@ class MainActivity : ComponentActivity() {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                 if ((event?.eventTime?.minus(event.downTime) ?: 0L) < 500L) {
-                    if (uiState.isPaginated && uiState.currentPage < uiState.totalPages - 1) {
-                        viewModel.nextPage()
-                    } else {
-                        if (uiState.isPaginated) {
-                            viewModel.dismissPagination()
-                        }
-                        viewModel.captureAndSendPhoto()
-                    }
+                    viewModel.captureAndSendPhoto()
                 }
                 true
             }
@@ -308,25 +285,22 @@ class MainActivity : ComponentActivity() {
 fun GlassesMainScreen(viewModel: GlassesViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     var showDeviceSelector by remember { mutableStateOf(false) }
-    var swipeOffset by remember { mutableFloatStateOf(0f) }
-    val swipeThreshold = 50f
+    val answerScrollState = rememberScrollState()
+
+    LaunchedEffect(uiState.displayText) {
+        answerScrollState.scrollTo(0)
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(uiState.isPaginated) {
-                if (uiState.isPaginated) {
+            .pointerInput(uiState.displayText) {
+                if (uiState.displayText.isNotBlank()) {
                     detectVerticalDragGestures(
-                        onDragEnd = {
-                            when {
-                                swipeOffset > swipeThreshold -> viewModel.previousPage()
-                                swipeOffset < -swipeThreshold -> viewModel.nextPage()
-                            }
-                            swipeOffset = 0f
-                        },
-                        onDragCancel = { swipeOffset = 0f },
-                        onVerticalDrag = { _, dragAmount -> swipeOffset += dragAmount }
+                        onVerticalDrag = { _, dragAmount ->
+                            answerScrollState.dispatchRawDelta(-dragAmount)
+                        }
                     )
                 }
             }
@@ -334,13 +308,7 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() }
             ) {
-                if (uiState.isPaginated) {
-                    if (uiState.currentPage < uiState.totalPages - 1) {
-                        viewModel.nextPage()
-                    } else {
-                        viewModel.dismissPagination()
-                    }
-                } else if (uiState.isConnected) {
+                if (uiState.isConnected) {
                     viewModel.captureAndSendPhoto()
                 } else {
                     viewModel.refreshPairedDevices()
@@ -354,7 +322,7 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
         ) {
             AnswerDisplayArea(
                 displayText = uiState.displayText,
-                isPaginated = uiState.isPaginated,
+                scrollState = answerScrollState,
                 modifier = Modifier
                     .weight(5f)
                     .fillMaxWidth()
@@ -513,7 +481,7 @@ fun StatusDot(
 @Composable
 fun AnswerDisplayArea(
     displayText: String,
-    isPaginated: Boolean = false,
+    scrollState: ScrollState,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -521,32 +489,30 @@ fun AnswerDisplayArea(
             .fillMaxSize()
             .fillMaxWidth()
             .padding(horizontal = 28.dp, vertical = 10.dp),
-        contentAlignment = Alignment.Center
+        contentAlignment = Alignment.TopStart
     ) {
         AnimatedContent(
             targetState = displayText,
-            transitionSpec = {
-                if (isPaginated) {
-                    slideInVertically { height -> height } + fadeIn() togetherWith
-                        slideOutVertically { height -> -height } + fadeOut()
-                } else {
-                    fadeIn() togetherWith fadeOut()
-                }
-            },
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
             label = "display_text"
         ) { text ->
             if (text.isNotBlank()) {
-                Text(
-                    text = text,
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Start,
-                    lineHeight = 18.sp,
-                    maxLines = 18,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                ) {
+                    Text(
+                        text = text,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Start,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }

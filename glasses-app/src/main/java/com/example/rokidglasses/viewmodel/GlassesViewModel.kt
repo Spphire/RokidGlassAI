@@ -310,25 +310,24 @@ class GlassesViewModel(
     }
 
     private fun showAnalysisResult(text: String) {
-        responsePages = paginateText(text)
-        val isPaginated = responsePages.size > 1
-        val firstPage = responsePages.firstOrNull().orEmpty()
+        responsePages = emptyList()
+        val shouldShowScrollHint = text.length > SCROLL_HINT_TEXT_LENGTH
 
         _uiState.update {
             it.copy(
                 isCapturingPhoto = false,
                 photoTransferProgress = 0f,
                 isProcessing = false,
-                displayText = firstPage,
+                displayText = text,
                 statusText = context.getString(R.string.ai_done_status),
-                hintText = if (isPaginated) {
+                hintText = if (shouldShowScrollHint) {
                     context.getString(R.string.swipe_for_more)
                 } else {
                     context.getString(R.string.tap_touchpad_photo)
                 },
                 currentPage = 0,
-                totalPages = responsePages.size.coerceAtLeast(1),
-                isPaginated = isPaginated
+                totalPages = 1,
+                isPaginated = false
             )
         }
     }
@@ -599,6 +598,7 @@ class GlassesViewModel(
     private companion object {
         private const val TAG = "GlassesViewModel"
         private const val MAX_CHARS_PER_PAGE = 320
+        private const val SCROLL_HINT_TEXT_LENGTH = 180
         private const val AUTO_CONNECT_INITIAL_DELAY_MS = 1_000L
         private const val AUTO_CONNECT_RETRIES_PER_DEVICE = 6
         private const val AUTO_CONNECT_AFTER_START_DELAY_MS = 20_000L
