@@ -3,10 +3,10 @@ package com.example.rokidglasses.service.photo
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.hardware.camera2.*
+import android.hardware.camera2.params.MeteringRectangle
 import android.media.ExifInterface
 import android.media.Image
 import android.media.ImageReader
@@ -73,9 +73,14 @@ class GlassesCameraManager(private val context: Context) {
         private const val TAG = "GlassesCameraManager"
         
         // Capture settings
-        private const val TARGET_WIDTH = 1280
-        private const val TARGET_HEIGHT = 720
-        private const val JPEG_QUALITY = 85
+        // Rokid reports sensor orientation 270. Capturing a portrait YUV buffer
+        // and then rotating it yields an upright landscape photo with wider
+        // horizontal FOV.
+        private const val TARGET_WIDTH = 1080
+        private const val TARGET_HEIGHT = 1920
+        private const val JPEG_QUALITY = 95
+        private const val ROKID_YUV_ROTATION_DEGREES = 270
+        private const val CENTER_METERING_REGION_FRACTION = 0.35f
         
         // Timeouts
         private const val CAMERA_OPEN_TIMEOUT_MS = 5000L
@@ -444,6 +449,7 @@ class GlassesCameraManager(private val context: Context) {
             previewBuilder.addTarget(imageReader.surface)
             previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            applyCenterMeteringRegions(previewBuilder)
             
             // Run preview for a short time to stabilize exposure
             session.setRepeatingRequest(previewBuilder.build(), null, backgroundHandler)
@@ -460,8 +466,17 @@ class GlassesCameraManager(private val context: Context) {
             captureBuilder.addTarget(imageReader.surface)
             
             // Auto-focus and auto-exposure
+            captureBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT, CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE)
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            captureBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
             captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            captureBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+            captureBuilder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+            captureBuilder.set(
+                CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
+                CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY
+            )
+            applyCenterMeteringRegions(captureBuilder)
             
             // Exposure compensation for brighter photos
             val exposureCompensation = getExposureCompensation()
@@ -526,12 +541,22 @@ class GlassesCameraManager(private val context: Context) {
     }
 
     /**
-     * Detect Rokid Glasses devices, whose camera sensor is already mounted in
-     * the display's landscape orientation. Used to decide whether to suppress
-     * the JPEG_ORIENTATION EXIF tag during capture.
+     * Detect Rokid Glasses devices. Some firmwares report model strings like
+     * "RG_glasses" instead of a literal Rokid brand name.
      */
-    internal fun isRokidGlassesDevice(): Boolean =
-        Build.MODEL.contains("Rokid", ignoreCase = true)
+    internal fun isRokidGlassesDevice(): Boolean {
+        return listOf(
+            Build.MANUFACTURER,
+            Build.BRAND,
+            Build.MODEL,
+            Build.DEVICE,
+            Build.PRODUCT
+        ).any { value ->
+            value.contains("rokid", ignoreCase = true) ||
+                value.contains("glasses", ignoreCase = true) ||
+                value.contains("rg_", ignoreCase = true)
+        }
+    }
 
     /**
      * Reads the EXIF orientation tag from the captured JPEG and, if non-zero,
@@ -551,12 +576,53 @@ class GlassesCameraManager(private val context: Context) {
                 ExifInterface.ORIENTATION_ROTATE_270 -> 270
                 else -> 0
             }
-            if (degrees == 0) jpegBytes
-            else ImageCompressor.rotateImage(jpegBytes, degrees)
+            val rotationDegrees = if (degrees == 0 && isRokidGlassesDevice()) {
+                ROKID_YUV_ROTATION_DEGREES
+            } else {
+                degrees
+            }
+
+            if (rotationDegrees == 0) {
+                jpegBytes
+            } else {
+                Log.d(TAG, "Normalizing captured image orientation: rotate=$rotationDegrees")
+                ImageCompressor.rotateImage(jpegBytes, rotationDegrees)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to normalize orientation, returning original bytes", e)
             jpegBytes
         }
+    }
+
+    private fun applyCenterMeteringRegions(builder: CaptureRequest.Builder) {
+        val characteristics = cameraManager?.getCameraCharacteristics(cameraId ?: return) ?: return
+        val region = centerMeteringRegion(characteristics) ?: return
+
+        val maxAfRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
+        if (maxAfRegions > 0) {
+            builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+        }
+
+        val maxAeRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
+        if (maxAeRegions > 0) {
+            builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+        }
+    }
+
+    private fun centerMeteringRegion(characteristics: CameraCharacteristics): MeteringRectangle? {
+        val activeArray = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            ?: return null
+        val regionWidth = (activeArray.width() * CENTER_METERING_REGION_FRACTION).toInt()
+        val regionHeight = (activeArray.height() * CENTER_METERING_REGION_FRACTION).toInt()
+        val left = activeArray.left + (activeArray.width() - regionWidth) / 2
+        val top = activeArray.top + (activeArray.height() - regionHeight) / 2
+        return MeteringRectangle(
+            left,
+            top,
+            regionWidth,
+            regionHeight,
+            MeteringRectangle.METERING_WEIGHT_MAX
+        )
     }
 
     /**
@@ -564,22 +630,7 @@ class GlassesCameraManager(private val context: Context) {
      */
     private fun yuvToJpeg(image: Image): ByteArray? {
         try {
-            val yBuffer = image.planes[0].buffer
-            val uBuffer = image.planes[1].buffer
-            val vBuffer = image.planes[2].buffer
-            
-            val ySize = yBuffer.remaining()
-            val uSize = uBuffer.remaining()
-            val vSize = vBuffer.remaining()
-            
-            val nv21 = ByteArray(ySize + uSize + vSize)
-            
-            // Copy Y plane
-            yBuffer.get(nv21, 0, ySize)
-            
-            // Copy VU planes (NV21 format: VU interleaved)
-            vBuffer.get(nv21, ySize, vSize)
-            uBuffer.get(nv21, ySize + vSize, uSize)
+            val nv21 = yuv420888ToNv21(image)
             
             // Create YuvImage and compress to JPEG
             val yuvImage = android.graphics.YuvImage(
@@ -603,6 +654,88 @@ class GlassesCameraManager(private val context: Context) {
             return null
         }
     }
+
+    /**
+     * Convert Android's flexible YUV_420_888 planes into contiguous NV21.
+     * Plane buffers may contain row padding or interleaved chroma data with
+     * pixelStride=2, especially when using portrait YUV sizes on Rokid.
+     */
+    private fun yuv420888ToNv21(image: Image): ByteArray {
+        val crop = image.cropRect
+        val width = crop.width()
+        val height = crop.height()
+        val chromaWidth = width / 2
+        val chromaHeight = height / 2
+        val ySize = width * height
+        val nv21 = ByteArray(ySize + 2 * chromaWidth * chromaHeight)
+
+        copyPlane(
+            plane = image.planes[0],
+            planeWidth = width,
+            planeHeight = height,
+            cropLeft = crop.left,
+            cropTop = crop.top,
+            output = nv21,
+            outputOffset = 0,
+            outputPixelStride = 1
+        )
+        copyPlane(
+            plane = image.planes[2],
+            planeWidth = chromaWidth,
+            planeHeight = chromaHeight,
+            cropLeft = crop.left / 2,
+            cropTop = crop.top / 2,
+            output = nv21,
+            outputOffset = ySize,
+            outputPixelStride = 2
+        )
+        copyPlane(
+            plane = image.planes[1],
+            planeWidth = chromaWidth,
+            planeHeight = chromaHeight,
+            cropLeft = crop.left / 2,
+            cropTop = crop.top / 2,
+            output = nv21,
+            outputOffset = ySize + 1,
+            outputPixelStride = 2
+        )
+
+        return nv21
+    }
+
+    private fun copyPlane(
+        plane: Image.Plane,
+        planeWidth: Int,
+        planeHeight: Int,
+        cropLeft: Int,
+        cropTop: Int,
+        output: ByteArray,
+        outputOffset: Int,
+        outputPixelStride: Int
+    ) {
+        val buffer = plane.buffer.duplicate()
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val rowData = ByteArray(rowStride)
+        var outputIndex = outputOffset
+
+        for (row in 0 until planeHeight) {
+            val inputRowStart = (row + cropTop) * rowStride + cropLeft * pixelStride
+            buffer.position(inputRowStart)
+
+            if (pixelStride == 1 && outputPixelStride == 1) {
+                buffer.get(output, outputIndex, planeWidth)
+                outputIndex += planeWidth
+            } else {
+                val rowLength = (planeWidth - 1) * pixelStride + 1
+                buffer.get(rowData, 0, rowLength)
+                for (col in 0 until planeWidth) {
+                    output[outputIndex] = rowData[col * pixelStride]
+                    outputIndex += outputPixelStride
+                }
+            }
+        }
+    }
     
     /**
      * Choose optimal capture size for YUV format.
@@ -614,6 +747,16 @@ class GlassesCameraManager(private val context: Context) {
         // Use YUV_420_888 sizes instead of JPEG
         val outputSizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(TARGET_WIDTH, TARGET_HEIGHT)
         
+        Log.d(TAG, "Available YUV sizes: ${outputSizes.joinToString { "${it.width}x${it.height}" }}")
+
+        // Prefer the exact pre-rotation target first. 1920x1080 and 1080x1920
+        // have identical pixel counts, so a pixel-count-only match can pick the
+        // wrong orientation and shrink horizontal FOV after rotation.
+        outputSizes.firstOrNull { it.width == TARGET_WIDTH && it.height == TARGET_HEIGHT }?.let { exact ->
+            Log.d(TAG, "Selected capture size: ${exact.width}x${exact.height} (exact)")
+            return exact
+        }
+
         // Find size closest to target
         val targetPixels = TARGET_WIDTH * TARGET_HEIGHT
         

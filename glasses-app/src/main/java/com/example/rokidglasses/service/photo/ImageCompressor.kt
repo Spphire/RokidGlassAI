@@ -15,7 +15,7 @@ import java.io.ByteArrayOutputStream
  * Image Compressor for Photo Transfer
  * 
  * Handles image compression and optimization before Bluetooth transfer.
- * Targets 720p resolution with JPEG quality 70 for optimal transfer speed.
+ * Center-crops tall camera frames and keeps OCR detail with high JPEG quality.
  * 
  * Typical compression results:
  * - 1080p (2MP) photo: ~500KB → ~150KB
@@ -25,14 +25,15 @@ import java.io.ByteArrayOutputStream
 object ImageCompressor {
     
     private const val TAG = "ImageCompressor"
+    private const val PORTRAIT_CROP_MIN_ASPECT = 1.2f
     
     /**
      * Compress image data for transfer.
      * 
      * @param imageData Raw image data (JPEG, PNG, etc.)
-     * @param targetWidth Target width (default 1280 for 720p)
-     * @param targetHeight Target height (default 720 for 720p)
-     * @param quality JPEG quality (0-100, default 70)
+     * @param targetWidth Maximum target width
+     * @param targetHeight Maximum target height
+     * @param quality JPEG quality (0-100)
      * @param maxSize Maximum output size in bytes (default 200KB)
      * @return Compressed JPEG data
      */
@@ -67,15 +68,25 @@ object ImageCompressor {
         // Decode with sample size
         val sampledBitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size, options)
             ?: throw IllegalArgumentException("Failed to decode image")
+
+        val croppedBitmap = cropPortraitCenterForReading(sampledBitmap)
+        if (croppedBitmap != sampledBitmap) {
+            Log.d(
+                TAG,
+                "Portrait center crop: ${sampledBitmap.width}x${sampledBitmap.height} -> " +
+                    "${croppedBitmap.width}x${croppedBitmap.height}"
+            )
+            sampledBitmap.recycle()
+        }
         
         // Scale to exact target size while maintaining aspect ratio
-        val scaledBitmap = scaleBitmap(sampledBitmap, targetWidth, targetHeight)
+        val scaledBitmap = scaleBitmap(croppedBitmap, targetWidth, targetHeight)
         val outputWidth = scaledBitmap.width
         val outputHeight = scaledBitmap.height
         
         // Recycle sampled bitmap if different from scaled
-        if (sampledBitmap != scaledBitmap) {
-            sampledBitmap.recycle()
+        if (croppedBitmap != scaledBitmap) {
+            croppedBitmap.recycle()
         }
         
         // Compress to JPEG with adaptive quality
@@ -176,6 +187,24 @@ object ImageCompressor {
         val newHeight = (height * scale).toInt()
         
         return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+    }
+
+    /**
+     * Rokid camera frames become portrait after orientation normalization.
+     * For document/OCR use, the center square keeps the monitor/page area and
+     * removes ceiling/keyboard clutter before Bluetooth compression.
+     */
+    private fun cropPortraitCenterForReading(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (height < width * PORTRAIT_CROP_MIN_ASPECT) {
+            return bitmap
+        }
+
+        val cropSize = minOf(width, height)
+        val left = ((width - cropSize) / 2).coerceAtLeast(0)
+        val top = ((height - cropSize) / 2).coerceAtLeast(0)
+        return Bitmap.createBitmap(bitmap, left, top, cropSize, cropSize)
     }
     
     /**

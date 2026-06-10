@@ -13,25 +13,26 @@
     <string name="cancel">Cancel</string>
     <string name="recommended">Recommended</string>
 
-    <string name="not_connected">Not connected to phone</string>
-    <string name="connecting_status">Connecting...</string>
-    <string name="connected_ready">Connected, ready to capture</string>
-    <string name="please_connect_phone">Tap to select phone</string>
-    <string name="please_wait">Please wait</string>
-    <string name="tap_touchpad_photo">Tap touchpad to capture and analyze</string>
+    <string name="not_connected">No phone</string>
+    <string name="connecting_status">Connecting</string>
+    <string name="connected_ready">Ready</string>
+    <string name="please_connect_phone">Tap connect</string>
+    <string name="please_wait">Wait</string>
+    <string name="tap_touchpad_photo">Tap capture</string>
     <string name="please_try_again">Please try again</string>
     <string name="error_prefix">Error: %s</string>
 
     <string name="page_indicator">%1$d / %2$d</string>
-    <string name="swipe_for_more">Swipe up/down for more</string>
+    <string name="swipe_for_more">Up/Down scroll</string>
+    <string name="ai_done_status">AI done</string>
 
-    <string name="bluetooth_not_connected">Bluetooth not connected</string>
+    <string name="bluetooth_not_connected">BT not connected</string>
     <string name="connect_phone_first">Connect phone first</string>
-    <string name="capturing_photo">Capturing photo...</string>
-    <string name="please_wait_short">Please wait</string>
-    <string name="compressing_photo">Compressing...</string>
-    <string name="transferring_photo">Transferring...</string>
-    <string name="photo_sent_waiting_ai">Sent, waiting for AI analysis...</string>
+    <string name="capturing_photo">Capturing</string>
+    <string name="please_wait_short">Wait</string>
+    <string name="compressing_photo">Compressing</string>
+    <string name="transferring_photo">Sending</string>
+    <string name="photo_sent_waiting_ai">AI wait</string>
     <string name="photo_analysis_no_result">Unable to analyze this photo</string>
     <string name="capture_failed">Capture failed</string>
     <string name="capture_failed_hint">Camera may be busy, try again</string>

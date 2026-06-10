@@ -17,9 +17,11 @@ import com.example.rokidphone.R
 import com.example.rokidphone.service.ai.AiRequestSettingsStore
 import com.example.rokidphone.service.ai.CodexRelayVisionClient
 import com.example.rokidphone.service.ai.PromptStore
+import com.example.rokidphone.service.photo.PhotoRepository
 import com.example.rokidphone.service.photo.ReceivedPhoto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -30,6 +32,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class PhoneAIService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val visionClient = CodexRelayVisionClient()
+    private val photoRepository by lazy { PhotoRepository(this, serviceScope) }
     private var bluetoothManager: BluetoothSppManager? = null
 
     override fun onCreate() {
@@ -193,6 +196,10 @@ class PhoneAIService : Service() {
         Log.d(TAG, "Photo received: ${photo.data.size} bytes")
         val manager = bluetoothManager ?: return
 
+        photoRepository.processReceivedPhoto(photo)?.let { savedPhoto ->
+            Log.d(TAG, "Saved received glasses photo: ${savedPhoto.filePath}")
+        }
+
         ServiceBridge.updateProcessingStatus("Photo received. Calling AI...")
         manager.sendMessage(Message.aiProcessing("Analyzing photo..."))
 
@@ -200,12 +207,16 @@ class PhoneAIService : Service() {
         val aiSettings = AiRequestSettingsStore.getSettings(this)
         val aiTimeoutMs = effectiveAiAnalysisTimeoutMs(aiSettings.timeoutSeconds)
         var lastAiProgress = "Starting AI request"
+        var progressSendJob: Job? = null
         val result = withTimeoutOrNull(aiTimeoutMs) {
             visionClient.analyze(photo.data, prompt, aiSettings) { progress ->
                 lastAiProgress = progress.toStatusText()
                 ServiceBridge.updateProcessingStatus(lastAiProgress)
-                serviceScope.launch {
-                    manager.sendMessage(Message.aiProcessing(cleanAiStatusForGlasses(lastAiProgress)))
+                val statusForGlasses = cleanAiStatusForGlasses(lastAiProgress)
+                val previousProgressSend = progressSendJob
+                progressSendJob = serviceScope.launch {
+                    previousProgressSend?.join()
+                    manager.sendMessage(Message.aiProcessing(statusForGlasses))
                 }
             }
         } ?: Result.failure(
@@ -213,6 +224,11 @@ class PhoneAIService : Service() {
                 "AI request timed out after ${aiTimeoutMs / 1_000L}s. Last stage: $lastAiProgress"
             )
         )
+
+        withTimeoutOrNull(PROGRESS_SEND_DRAIN_TIMEOUT_MS) {
+            progressSendJob?.join()
+        }
+
         val displayText = result.fold(
             onSuccess = { cleanForGlasses(it) },
             onFailure = { error ->
@@ -275,6 +291,7 @@ class PhoneAIService : Service() {
         private const val TAG = "PhoneAIService"
         private const val BLUETOOTH_WATCHDOG_INTERVAL_MS = 15_000L
         private const val MIN_AI_ANALYSIS_TIMEOUT_MS = 180_000L
+        private const val PROGRESS_SEND_DRAIN_TIMEOUT_MS = 5_000L
         private const val EXTRA_START_REASON = "com.example.rokidphone.extra.START_REASON"
         private const val ACTION_ACL_CONNECTED = "android.bluetooth.device.action.ACL_CONNECTED"
         private const val ACTION_ACL_DISCONNECTED = "android.bluetooth.device.action.ACL_DISCONNECTED"

@@ -92,3 +92,13 @@ credentials.json
 
 # Local SN auth binary (keep local, never commit)
 app/src/main/res/raw/sn_auth_file.lc
+
+# Local debug captures pulled from devices
+/glasses_photo_*.jpg
+/install_prompt.png
+/latest_glasses_photo*.jpg
+/phone_*.jpg
+/phone_current.png
+/rokid_*.jpg
+/rokid_*.png
+/rokid_*.xml

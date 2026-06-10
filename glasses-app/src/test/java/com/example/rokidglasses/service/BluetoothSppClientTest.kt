@@ -94,6 +94,15 @@ class BluetoothSppClientTest {
     }
 
     @Test
+    fun `getPairedDevices filters iPhone devices`() {
+        val iPhone = mockDevice(name = "iPhone", address = "00:11:22:33:44:55")
+        val iQoo = mockDevice(name = "iQOO 13", address = "40:45:A0:13:97:2A")
+        every { mockBluetoothAdapter.bondedDevices } returns setOf(iPhone, iQoo)
+
+        assertThat(client.getPairedDevices()).containsExactly(iQoo)
+    }
+
+    @Test
     fun `isBluetoothEnabled returns adapter state`() {
         every { mockBluetoothAdapter.isEnabled } returns true
         assertThat(client.isBluetoothEnabled()).isTrue()
@@ -218,13 +227,13 @@ class BluetoothSppClientTest {
     }
 
     @Test
-    fun `phone candidate ranking prefers Android phone names over iPhone`() {
+    fun `phone candidate ranking excludes iPhone devices`() {
         val iPhone = mockDevice(name = "iPhone", address = "00:11:22:33:44:55")
         val iQoo = mockDevice(name = "iQOO 13", address = "40:45:A0:13:97:2A")
 
         val ranked = invokeRankPairedDevicesForPhone(listOf(iPhone, iQoo))
 
-        assertThat(ranked.first()).isSameInstanceAs(iQoo)
+        assertThat(ranked).containsExactly(iQoo)
     }
 
     @Test

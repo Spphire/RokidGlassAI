@@ -14,7 +14,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -28,10 +27,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
@@ -55,6 +52,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -68,6 +66,7 @@ import com.example.rokidglasses.viewmodel.GlassesViewModel
 class MainActivity : ComponentActivity() {
     private var glassesViewModel: GlassesViewModel? = null
     private var pendingDebugConnect: DebugConnectRequest? = null
+    private var pendingDebugCaptureOnly = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -108,6 +107,11 @@ class MainActivity : ComponentActivity() {
                             nameQuery = request.nameQuery,
                             maxRetries = request.maxRetries
                         )
+                    }
+                    if (pendingDebugCaptureOnly) {
+                        pendingDebugCaptureOnly = false
+                        Log.d(TAG, "Running pending debug capture-only request")
+                        viewModel.captureDebugPhotoOnly()
                     }
                 }
                 GlassesMainScreen(viewModel = viewModel)
@@ -214,6 +218,17 @@ class MainActivity : ComponentActivity() {
     private fun handleDebugIntent(intent: Intent?) {
         if (!isDebuggable()) return
 
+        if (intent?.getBooleanExtra(EXTRA_DEBUG_CAPTURE_ONLY, false) == true) {
+            val viewModel = glassesViewModel
+            if (viewModel == null) {
+                Log.w(TAG, "Debug capture-only requested before ViewModel is ready")
+                pendingDebugCaptureOnly = true
+            } else {
+                Log.d(TAG, "Debug capture-only requested")
+                viewModel.captureDebugPhotoOnly()
+            }
+        }
+
         val address = intent?.getStringExtra(EXTRA_DEBUG_CONNECT_ADDRESS)
         val nameQuery = intent?.getStringExtra(EXTRA_DEBUG_CONNECT_NAME)
         val maxRetries = intent?.getIntExtra(EXTRA_DEBUG_CONNECT_RETRIES, 5) ?: 5
@@ -279,6 +294,7 @@ class MainActivity : ComponentActivity() {
         private const val EXTRA_DEBUG_CONNECT_ADDRESS = "debug_connect_address"
         private const val EXTRA_DEBUG_CONNECT_NAME = "debug_connect_name"
         private const val EXTRA_DEBUG_CONNECT_RETRIES = "debug_connect_retries"
+        private const val EXTRA_DEBUG_CAPTURE_ONLY = "debug_capture_only"
     }
 
     private data class DebugConnectRequest(
@@ -332,39 +348,33 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                 }
             }
     ) {
-        StatusIndicator(
-            isConnected = uiState.isConnected,
-            deviceName = uiState.connectedDeviceName,
+        Column(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp)
-        )
+                .fillMaxSize()
+        ) {
+            AnswerDisplayArea(
+                displayText = uiState.displayText,
+                isPaginated = uiState.isPaginated,
+                modifier = Modifier
+                    .weight(5f)
+                    .fillMaxWidth()
+            )
 
-        if (uiState.isPaginated) {
-            PageIndicator(
-                currentPage = uiState.currentPage + 1,
+            BottomStatusBar(
+                isConnected = uiState.isConnected,
+                deviceName = uiState.connectedDeviceName,
+                statusText = uiState.statusText,
+                hintText = uiState.hintText,
+                isProcessing = uiState.isProcessing,
+                photoTransferProgress = uiState.photoTransferProgress,
+                isPaginated = uiState.isPaginated,
+                currentPage = uiState.currentPage,
                 totalPages = uiState.totalPages,
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(16.dp)
+                    .weight(1f)
+                    .fillMaxWidth()
             )
         }
-
-        MainDisplayArea(
-            displayText = uiState.displayText,
-            isProcessing = uiState.isProcessing,
-            isPaginated = uiState.isPaginated,
-            currentPage = uiState.currentPage,
-            totalPages = uiState.totalPages,
-            modifier = Modifier.align(Alignment.Center)
-        )
-
-        HintText(
-            hint = uiState.hintText,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 24.dp)
-        )
 
         if (showDeviceSelector) {
             DeviceSelectorDialog(
@@ -478,36 +488,6 @@ fun DeviceSelectorDialog(
 }
 
 @Composable
-fun StatusIndicator(
-    isConnected: Boolean,
-    deviceName: String? = null,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        StatusDot(
-            color = if (isConnected) Color(0xFF64B5F6) else Color(0xFFFF5722),
-            label = if (isConnected) {
-                stringResource(R.string.connected)
-            } else {
-                stringResource(R.string.tap_to_connect)
-            }
-        )
-
-        if (isConnected && deviceName != null) {
-            Text(
-                text = deviceName,
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 10.sp
-            )
-        }
-    }
-}
-
-@Composable
 fun StatusDot(
     color: Color,
     label: String
@@ -524,40 +504,25 @@ fun StatusDot(
         Text(
             text = label,
             color = Color.White.copy(alpha = 0.8f),
-            fontSize = 12.sp
+            fontSize = 11.sp,
+            maxLines = 1
         )
     }
 }
 
 @Composable
-fun MainDisplayArea(
+fun AnswerDisplayArea(
     displayText: String,
-    isProcessing: Boolean,
     isPaginated: Boolean = false,
-    currentPage: Int = 0,
-    totalPages: Int = 1,
     modifier: Modifier = Modifier
 ) {
-    Column(
+    Box(
         modifier = modifier
+            .fillMaxSize()
             .fillMaxWidth()
-            .padding(horizontal = 32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 28.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
     ) {
-        AnimatedVisibility(
-            visible = isProcessing,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(32.dp),
-                color = Color(0xFF64B5F6),
-                strokeWidth = 3.dp
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
         AnimatedContent(
             targetState = displayText,
             transitionSpec = {
@@ -570,64 +535,134 @@ fun MainDisplayArea(
             },
             label = "display_text"
         ) { text ->
-            Text(
-                text = text,
-                color = Color.White,
-                fontSize = if (isPaginated) 20.sp else 24.sp,
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center,
-                lineHeight = if (isPaginated) 28.sp else 32.sp,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        if (isPaginated) {
-            Spacer(modifier = Modifier.height(16.dp))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (currentPage > 0) {
-                    Text(text = "^", color = Color(0xFF64B5F6), fontSize = 16.sp)
-                }
-                if (currentPage < totalPages - 1) {
-                    Text(text = "v", color = Color(0xFF64B5F6), fontSize = 16.sp)
-                }
+            if (text.isNotBlank()) {
+                Text(
+                    text = text,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Start,
+                    lineHeight = 18.sp,
+                    maxLines = 18,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
 }
 
 @Composable
-fun PageIndicator(
+fun BottomStatusBar(
+    isConnected: Boolean,
+    deviceName: String?,
+    statusText: String,
+    hintText: String,
+    isProcessing: Boolean,
+    photoTransferProgress: Float,
+    isPaginated: Boolean,
     currentPage: Int,
     totalPages: Int,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
-        color = Color(0xFF2A2A2A),
-        shape = MaterialTheme.shapes.small
+    val deviceLabel = deviceName?.let { compactText(it, maxChars = 12) }
+    val statusLine = compactText(statusText, maxChars = 34)
+    val hintLine = compactText(
+        if (isPaginated) stringResource(R.string.swipe_for_more) else hintText,
+        maxChars = 42
+    )
+    val pageLabel = if (isPaginated) {
+        stringResource(R.string.page_indicator, currentPage + 1, totalPages)
+    } else {
+        null
+    }
+    val progressLabel = if (isProcessing && photoTransferProgress > 0f && photoTransferProgress < 1f) {
+        "${(photoTransferProgress * 100).toInt().coerceIn(1, 99)}%"
+    } else {
+        null
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xEE050505))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.Center
     ) {
-        Text(
-            text = stringResource(R.string.page_indicator, currentPage, totalPages),
-            color = Color.White.copy(alpha = 0.8f),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatusDot(
+                color = if (isConnected) Color(0xFF64B5F6) else Color(0xFFFF7043),
+                label = if (isConnected) "BT" else "BT-"
+            )
+
+            if (deviceLabel != null) {
+                Text(
+                    text = deviceLabel,
+                    color = Color.White.copy(alpha = 0.55f),
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Text(
+                text = statusLine,
+                color = Color.White.copy(alpha = 0.82f),
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            if (isProcessing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    color = Color(0xFF64B5F6),
+                    strokeWidth = 2.dp
+                )
+            }
+
+            if (pageLabel != null) {
+                Text(
+                    text = pageLabel,
+                    color = Color(0xFF64B5F6),
+                    fontSize = 11.sp,
+                    maxLines = 1
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = hintLine,
+                color = Color.White.copy(alpha = 0.52f),
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            if (progressLabel != null) {
+                Text(
+                    text = progressLabel,
+                    color = Color.White.copy(alpha = 0.65f),
+                    fontSize = 10.sp,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }
 
-@Composable
-fun HintText(
-    hint: String,
-    modifier: Modifier = Modifier
-) {
-    Text(
-        text = hint,
-        color = Color.White.copy(alpha = 0.5f),
-        fontSize = 14.sp,
-        textAlign = TextAlign.Center,
-        modifier = modifier
-    )
+private fun compactText(text: String, maxChars: Int): String {
+    val compact = text.replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
+    return if (compact.length <= maxChars) compact else compact.take(maxChars - 1) + "..."
 }

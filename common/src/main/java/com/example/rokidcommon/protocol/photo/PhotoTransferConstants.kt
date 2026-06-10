@@ -179,24 +179,26 @@ object PhotoTransferConstants {
     // ==================== Image Compression Settings ====================
     
     /**
-     * Target width for compressed images (720p)
+     * Target maximum width for compressed landscape images.
      */
-    const val TARGET_IMAGE_WIDTH = 1280
+    const val TARGET_IMAGE_WIDTH = 1920
     
     /**
-     * Target height for compressed images (720p)
+     * Target maximum height for compressed landscape images.
      */
-    const val TARGET_IMAGE_HEIGHT = 720
+    const val TARGET_IMAGE_HEIGHT = 1080
     
     /**
      * JPEG compression quality (0-100)
-     * 70 provides good balance between quality and size
+     * q80 keeps screen text close to q88 in practice while reducing Bluetooth
+     * transfer time for the glasses-to-phone path.
      */
-    const val JPEG_QUALITY = 70
+    const val JPEG_QUALITY = 80
     
     /**
      * Maximum file size target after compression (bytes)
-     * 200KB should transfer in ~2-3 seconds over Bluetooth SPP
+     * Keeps transfer latency predictable while still leaving room for detailed
+     * cropped document photos.
      */
-    const val MAX_COMPRESSED_SIZE = 200 * 1024
+    const val MAX_COMPRESSED_SIZE = 320 * 1024
 }

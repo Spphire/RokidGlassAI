@@ -148,7 +148,7 @@ class BluetoothSppClient(
             return emptyList()
         }
         
-        return bluetoothAdapter?.bondedDevices?.toList() ?: emptyList()
+        return filterSupportedPhoneCandidates(bluetoothAdapter?.bondedDevices?.toList().orEmpty())
     }
 
     /**
@@ -170,7 +170,7 @@ class BluetoothSppClient(
             ?.takeIf { it.isNotBlank() }
             ?.uppercase(Locale.US)
         val normalizedNameQuery = nameQuery?.trim()?.takeIf { it.isNotBlank() }
-        val devices = bluetoothAdapter?.bondedDevices?.toList().orEmpty()
+        val devices = filterSupportedPhoneCandidates(bluetoothAdapter?.bondedDevices?.toList().orEmpty())
 
         val selectedDevices = if (normalizedAddress != null || normalizedNameQuery != null) {
             devices.filter { device ->
@@ -213,7 +213,22 @@ class BluetoothSppClient(
 
     @SuppressLint("MissingPermission")
     private fun rankPairedDevicesForPhone(devices: List<BluetoothDevice>): List<BluetoothDevice> {
-        return devices.sortedByDescending { device -> phoneCandidateScore(device) }
+        return filterSupportedPhoneCandidates(devices)
+            .sortedByDescending { device -> phoneCandidateScore(device) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun filterSupportedPhoneCandidates(devices: List<BluetoothDevice>): List<BluetoothDevice> {
+        return devices.filterNot { device ->
+            val deviceName = getSafeDeviceName(device)
+            val excluded = NON_ANDROID_PHONE_NAME_HINTS.any { hint ->
+                deviceName.contains(hint, ignoreCase = true)
+            }
+            if (excluded) {
+                Log.d(TAG, "Skipping unsupported Bluetooth candidate: $deviceName")
+            }
+            excluded
+        }
     }
 
     @SuppressLint("MissingPermission")

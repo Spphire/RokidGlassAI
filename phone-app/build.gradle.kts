@@ -44,7 +44,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        val codexRelayUrl = localProps.getProperty("CODEX_RELAY_URL", "http://8.209.234.8:8080")
+        val codexRelayUrl = localProps.getProperty("CODEX_RELAY_URL", "https://api.20021004.xyz")
         val codexRelayApiKey = localProps.getProperty(
             "CODEX_RELAY_API_KEY",
             ""

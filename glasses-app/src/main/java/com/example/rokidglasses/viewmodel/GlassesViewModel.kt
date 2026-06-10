@@ -25,11 +25,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.io.File
 
 data class GlassesUiState(
     val isConnected: Boolean = false,
     val isProcessing: Boolean = false,
     val displayText: String = "",
+    val statusText: String = "",
     val hintText: String = "",
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val currentPage: Int = 0,
@@ -56,7 +58,7 @@ class GlassesViewModel(
 
     private val _uiState = MutableStateFlow(
         GlassesUiState(
-            displayText = context.getString(R.string.connected_ready),
+            statusText = context.getString(R.string.connecting_status),
             hintText = context.getString(R.string.tap_touchpad_photo)
         )
     )
@@ -83,7 +85,7 @@ class GlassesViewModel(
                         connectionState = connectionState,
                         isConnected = state == BluetoothClientState.CONNECTED,
                         isProcessing = it.isProcessing && state == BluetoothClientState.CONNECTED,
-                        displayText = when (state) {
+                        statusText = when (state) {
                             BluetoothClientState.DISCONNECTED -> context.getString(R.string.not_connected)
                             BluetoothClientState.CONNECTING -> context.getString(R.string.connecting_status)
                             BluetoothClientState.CONNECTED -> context.getString(R.string.connected_ready)
@@ -212,7 +214,7 @@ class GlassesViewModel(
         if (!started) {
             _uiState.update {
                 it.copy(
-                    displayText = context.getString(R.string.bluetooth_not_connected),
+                    statusText = context.getString(R.string.bluetooth_not_connected),
                     hintText = context.getString(R.string.connect_phone_first)
                 )
             }
@@ -243,12 +245,23 @@ class GlassesViewModel(
     }
 
     private fun showProcessing(text: String?) {
-        _uiState.update {
-            it.copy(
+        val status = text ?: context.getString(R.string.processing)
+        _uiState.update { currentState ->
+            if (!currentState.isProcessing && currentState.displayText.isNotBlank()) {
+                Log.d(TAG, "Ignoring stale AI processing status after final result: $status")
+                currentState
+            } else {
+                responsePages = emptyList()
+                currentState.copy(
                 isProcessing = true,
-                displayText = text ?: context.getString(R.string.processing),
-                hintText = context.getString(R.string.please_wait_short)
+                displayText = "",
+                    statusText = status,
+                hintText = context.getString(R.string.please_wait_short),
+                currentPage = 0,
+                totalPages = 1,
+                isPaginated = false
             )
+            }
         }
     }
 
@@ -257,7 +270,7 @@ class GlassesViewModel(
             it.copy(
                 isCapturingPhoto = false,
                 isProcessing = false,
-                displayText = context.getString(R.string.error_prefix, text.orEmpty()),
+                statusText = context.getString(R.string.error_prefix, text.orEmpty()),
                 hintText = context.getString(R.string.please_retry)
             )
         }
@@ -266,7 +279,7 @@ class GlassesViewModel(
     private fun showDisplayText(text: String) {
         _uiState.update {
             it.copy(
-                displayText = text,
+                statusText = text,
                 isProcessing = false,
                 isCapturingPhoto = false
             )
@@ -277,7 +290,8 @@ class GlassesViewModel(
         responsePages = emptyList()
         _uiState.update {
             it.copy(
-                displayText = context.getString(R.string.connected_ready),
+                displayText = "",
+                statusText = context.getString(R.string.connected_ready),
                 hintText = context.getString(R.string.tap_touchpad_photo),
                 currentPage = 0,
                 totalPages = 1,
@@ -299,14 +313,14 @@ class GlassesViewModel(
         responsePages = paginateText(text)
         val isPaginated = responsePages.size > 1
         val firstPage = responsePages.firstOrNull().orEmpty()
-        val pageIndicator = if (isPaginated) " (1/${responsePages.size})" else ""
 
         _uiState.update {
             it.copy(
                 isCapturingPhoto = false,
                 photoTransferProgress = 0f,
                 isProcessing = false,
-                displayText = firstPage + pageIndicator,
+                displayText = firstPage,
+                statusText = context.getString(R.string.ai_done_status),
                 hintText = if (isPaginated) {
                     context.getString(R.string.swipe_for_more)
                 } else {
@@ -323,21 +337,17 @@ class GlassesViewModel(
         if (text.isBlank()) return listOf("")
         if (text.length <= MAX_CHARS_PER_PAGE) return listOf(text)
 
+        val breakChars = listOf('\n', ' ', '。', '，', '；', '、', ';', '.', ',')
         val pages = mutableListOf<String>()
         var index = 0
         while (index < text.length) {
             val hardEnd = minOf(index + MAX_CHARS_PER_PAGE, text.length)
             var breakPoint = hardEnd
             if (hardEnd < text.length) {
-                val naturalBreak = listOf(
-                    text.lastIndexOf('\n', hardEnd),
-                    text.lastIndexOf(' ', hardEnd),
-                    text.lastIndexOf('。', hardEnd),
-                    text.lastIndexOf('；', hardEnd),
-                    text.lastIndexOf(';', hardEnd),
-                    text.lastIndexOf('.', hardEnd),
-                    text.lastIndexOf(',', hardEnd)
-                ).filter { it > index }.maxOrNull()
+                val naturalBreak = breakChars
+                    .map { text.lastIndexOf(it, hardEnd) }
+                    .filter { it > index }
+                    .maxOrNull()
 
                 if (naturalBreak != null) {
                     breakPoint = naturalBreak + 1
@@ -358,7 +368,7 @@ class GlassesViewModel(
         _uiState.update {
             it.copy(
                 currentPage = newPage,
-                displayText = "${responsePages.getOrElse(newPage) { "" }} (${newPage + 1}/${responsePages.size})",
+                displayText = responsePages.getOrElse(newPage) { "" },
                 hintText = if (newPage == currentState.totalPages - 1) {
                     context.getString(R.string.tap_touchpad_photo)
                 } else {
@@ -376,7 +386,7 @@ class GlassesViewModel(
         _uiState.update {
             it.copy(
                 currentPage = newPage,
-                displayText = "${responsePages.getOrElse(newPage) { "" }} (${newPage + 1}/${responsePages.size})",
+                displayText = responsePages.getOrElse(newPage) { "" },
                 hintText = context.getString(R.string.swipe_for_more)
             )
         }
@@ -384,6 +394,71 @@ class GlassesViewModel(
 
     fun dismissPagination() {
         resetDisplay()
+    }
+
+    fun captureDebugPhotoOnly() {
+        responsePages = emptyList()
+        viewModelScope.launch {
+            try {
+                _uiState.update {
+                    it.copy(
+                        isCapturingPhoto = true,
+                        isProcessing = true,
+                        displayText = "",
+                        statusText = "Debug capture",
+                        hintText = context.getString(R.string.please_wait_short),
+                        currentPage = 0,
+                        totalPages = 1,
+                        isPaginated = false,
+                        photoTransferProgress = 0f
+                    )
+                }
+
+                val rawImageData = cameraManager?.capturePhoto()
+                    ?: error("Camera returned no image")
+                val compressedData = withContext(Dispatchers.Default) {
+                    ImageCompressor.compressForTransfer(rawImageData)
+                }
+                val savedCapture = saveLatestCaptureForDebug(rawImageData, compressedData)
+
+                _uiState.update {
+                    it.copy(
+                        isCapturingPhoto = false,
+                        isProcessing = false,
+                        statusText = "Saved ${savedCapture.rawDimensions.first}x${savedCapture.rawDimensions.second} -> " +
+                            "${savedCapture.transferDimensions.first}x${savedCapture.transferDimensions.second}",
+                        hintText = context.getString(R.string.tap_touchpad_photo),
+                        photoTransferProgress = 0f
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Debug capture-only failed", e)
+                _uiState.update {
+                    it.copy(
+                        isCapturingPhoto = false,
+                        isProcessing = false,
+                        statusText = "Debug capture failed: ${e.message.orEmpty()}",
+                        hintText = context.getString(R.string.please_retry),
+                        photoTransferProgress = 0f
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun saveLatestCaptureForDebug(
+        rawImageData: ByteArray,
+        compressedData: ByteArray
+    ): SavedCaptureDebugInfo {
+        val rawDimensions = ImageCompressor.getImageDimensions(rawImageData)
+        val transferDimensions = ImageCompressor.getImageDimensions(compressedData)
+        val debugDir = File(context.filesDir, "debug_capture")
+        withContext(Dispatchers.IO) {
+            debugDir.mkdirs()
+            File(debugDir, "latest_raw.jpg").writeBytes(rawImageData)
+            File(debugDir, "latest_transfer.jpg").writeBytes(compressedData)
+        }
+        return SavedCaptureDebugInfo(rawDimensions, transferDimensions)
     }
 
     fun captureAndSendPhoto() {
@@ -403,21 +478,27 @@ class GlassesViewModel(
             Log.w(TAG, "Photo capture blocked: bluetooth not connected")
             _uiState.update {
                 it.copy(
-                    displayText = context.getString(R.string.bluetooth_not_connected),
+                    statusText = context.getString(R.string.bluetooth_not_connected),
                     hintText = context.getString(R.string.connect_phone_first)
                 )
             }
             return
         }
 
+        responsePages = emptyList()
         viewModelScope.launch {
             try {
                 _uiState.update {
                     it.copy(
                         isCapturingPhoto = true,
                         isProcessing = true,
-                        displayText = context.getString(R.string.capturing_photo),
-                        hintText = context.getString(R.string.please_wait_short)
+                        displayText = "",
+                        statusText = context.getString(R.string.capturing_photo),
+                        hintText = context.getString(R.string.please_wait_short),
+                        currentPage = 0,
+                        totalPages = 1,
+                        isPaginated = false,
+                        photoTransferProgress = 0f
                     )
                 }
 
@@ -428,22 +509,27 @@ class GlassesViewModel(
                         it.copy(
                             isCapturingPhoto = false,
                             isProcessing = false,
-                            displayText = context.getString(R.string.capture_failed),
+                            statusText = context.getString(R.string.capture_failed),
                             hintText = context.getString(R.string.capture_failed_hint)
                         )
                     }
                     return@launch
                 }
 
-                _uiState.update { it.copy(displayText = context.getString(R.string.compressing_photo)) }
+                _uiState.update { it.copy(statusText = context.getString(R.string.compressing_photo)) }
                 val compressedData = withContext(Dispatchers.Default) {
                     ImageCompressor.compressForTransfer(rawImageData)
                 }
                 Log.d(TAG, "Photo compressed: ${rawImageData.size} -> ${compressedData.size} bytes")
+                runCatching {
+                    saveLatestCaptureForDebug(rawImageData, compressedData)
+                }.onFailure { error ->
+                    Log.w(TAG, "Failed to save latest capture debug files", error)
+                }
 
                 _uiState.update {
                     it.copy(
-                        displayText = context.getString(R.string.transferring_photo),
+                        statusText = context.getString(R.string.transferring_photo),
                         photoTransferProgress = 0f
                     )
                 }
@@ -462,7 +548,7 @@ class GlassesViewModel(
                         _uiState.update {
                             it.copy(
                                 isCapturingPhoto = false,
-                                displayText = context.getString(R.string.photo_sent_waiting_ai),
+                                statusText = context.getString(R.string.photo_sent_waiting_ai),
                                 hintText = context.getString(R.string.please_wait_short)
                             )
                         }
@@ -473,7 +559,7 @@ class GlassesViewModel(
                             it.copy(
                                 isCapturingPhoto = false,
                                 isProcessing = false,
-                                displayText = context.getString(R.string.transfer_failed, error.message.orEmpty()),
+                                statusText = context.getString(R.string.transfer_failed, error.message.orEmpty()),
                                 hintText = context.getString(R.string.please_retry)
                             )
                         }
@@ -485,7 +571,7 @@ class GlassesViewModel(
                     it.copy(
                         isCapturingPhoto = false,
                         isProcessing = false,
-                        displayText = context.getString(R.string.error_message, e.message.orEmpty()),
+                        statusText = context.getString(R.string.error_message, e.message.orEmpty()),
                         hintText = context.getString(R.string.please_retry)
                     )
                 }
@@ -512,7 +598,7 @@ class GlassesViewModel(
 
     private companion object {
         private const val TAG = "GlassesViewModel"
-        private const val MAX_CHARS_PER_PAGE = 120
+        private const val MAX_CHARS_PER_PAGE = 320
         private const val AUTO_CONNECT_INITIAL_DELAY_MS = 1_000L
         private const val AUTO_CONNECT_RETRIES_PER_DEVICE = 6
         private const val AUTO_CONNECT_AFTER_START_DELAY_MS = 20_000L
@@ -521,3 +607,8 @@ class GlassesViewModel(
         private const val AUTO_CONNECT_CONNECTED_POLL_MS = 15_000L
     }
 }
+
+private data class SavedCaptureDebugInfo(
+    val rawDimensions: Pair<Int, Int>,
+    val transferDimensions: Pair<Int, Int>
+)
