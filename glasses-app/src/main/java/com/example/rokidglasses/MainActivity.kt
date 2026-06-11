@@ -21,7 +21,6 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +62,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.rokidglasses.service.photo.CameraService
 import com.example.rokidglasses.ui.theme.RokidGlassesTheme
 import com.example.rokidglasses.viewmodel.GlassesViewModel
+
+private const val TWO_FINGER_TRIGGER_POINTERS = 2
+private const val ROKID_KEYCODE_SPRITE_DOUBLE_TAP = 262
 
 class MainActivity : ComponentActivity() {
     private var glassesViewModel: GlassesViewModel? = null
@@ -136,39 +139,26 @@ class MainActivity : ComponentActivity() {
         )
 
         return when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> true
-            KeyEvent.KEYCODE_CAMERA,
-            KeyEvent.KEYCODE_FOCUS,
-            27,
-            260,
-            261,
-            262,
-            263 -> {
-                Log.d(TAG, "Camera key accepted; requesting photo capture")
-                viewModel.captureAndSendPhoto()
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER -> {
+                Log.d(TAG, "Single tap key ignored; capture requires two-finger shortcut")
                 true
             }
-            KeyEvent.KEYCODE_BACK -> {
-                if (event?.repeatCount == 1) {
-                    viewModel.captureAndSendPhoto()
-                    true
-                } else {
-                    super.onKeyDown(keyCode, event)
-                }
+            KeyEvent.KEYCODE_CAMERA,
+            KeyEvent.KEYCODE_FOCUS,
+            ROKID_KEYCODE_SPRITE_DOUBLE_TAP -> {
+                Log.d(TAG, "Two-finger capture key accepted; requesting photo capture")
+                viewModel.captureAndSendPhoto()
+                true
             }
             else -> super.onKeyDown(keyCode, event)
         }
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        val viewModel = glassesViewModel ?: return super.onKeyUp(keyCode, event)
-        val uiState = viewModel.uiState.value
-
         return when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                if ((event?.eventTime?.minus(event.downTime) ?: 0L) < 500L) {
-                    viewModel.captureAndSendPhoto()
-                }
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER -> {
                 true
             }
             else -> super.onKeyUp(keyCode, event)
@@ -304,15 +294,15 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                     )
                 }
             }
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() }
-            ) {
-                if (uiState.isConnected) {
-                    viewModel.captureAndSendPhoto()
-                } else {
-                    viewModel.refreshPairedDevices()
-                    showDeviceSelector = true
+            .pointerInput(uiState.isConnected) {
+                detectTwoFingerPress {
+                    Log.d("GlassesMainScreen", "Two-finger press accepted")
+                    if (uiState.isConnected) {
+                        viewModel.captureAndSendPhoto()
+                    } else {
+                        viewModel.refreshPairedDevices()
+                        showDeviceSelector = true
+                    }
                 }
             }
     ) {
@@ -351,6 +341,23 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                 },
                 onDismiss = { showDeviceSelector = false }
             )
+        }
+    }
+}
+
+private suspend fun PointerInputScope.detectTwoFingerPress(onPress: () -> Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent()
+            if (event.changes.count { it.pressed } >= TWO_FINGER_TRIGGER_POINTERS) {
+                event.changes.forEach { it.consume() }
+                onPress()
+
+                do {
+                    val releaseEvent = awaitPointerEvent()
+                    releaseEvent.changes.forEach { it.consume() }
+                } while (releaseEvent.changes.any { it.pressed })
+            }
         }
     }
 }
