@@ -2,6 +2,7 @@ package com.example.rokidphone
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -76,8 +77,14 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        if (permissions.values.all { it }) {
+        val requiredGranted = requiredBridgePermissions().all { permission ->
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED ||
+                permissions[permission] == true
+        }
+        if (requiredGranted) {
             startBridgeService()
+        } else {
+            Log.w(TAG, "Bridge service not started; required permissions missing: ${permissions.filterValues { !it }}")
         }
     }
 
@@ -98,25 +105,38 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPermissionsAndStart() {
-        val required = buildList {
+        val missingRequired = requiredBridgePermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        val missingOptional = optionalBridgePermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingRequired.isEmpty()) {
+            startBridgeService()
+            if (missingOptional.isNotEmpty()) {
+                permissionLauncher.launch(missingOptional.toTypedArray())
+            }
+        } else {
+            permissionLauncher.launch((missingRequired + missingOptional).toTypedArray())
+        }
+    }
+
+    private fun requiredBridgePermissions(): List<String> {
+        return buildList {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
                 add(Manifest.permission.BLUETOOTH_SCAN)
                 add(Manifest.permission.BLUETOOTH_ADVERTISE)
             }
+        }
+    }
+
+    private fun optionalBridgePermissions(): List<String> {
+        return buildList {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
-        }
-
-        val missing = required.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missing.isEmpty()) {
-            startBridgeService()
-        } else {
-            permissionLauncher.launch(missing.toTypedArray())
         }
     }
 
@@ -155,6 +175,9 @@ private fun PhotoAiWorkbench(
     var knowledgeBaseStatus by remember { mutableStateOf("Loading knowledge bases...") }
     var pendingPhotoUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var batteryOptimized by remember { mutableStateOf(context.isBatteryOptimizationActive()) }
+    val vendorBackgroundSettingsIntent = remember(context) {
+        context.vendorBackgroundSettingsIntent()
+    }
     val backgroundSettingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -375,6 +398,10 @@ private fun PhotoAiWorkbench(
         Text("Latest: $processingStatus")
         Text("Background: ${if (batteryOptimized) "Restricted" else "Allowed"}")
         Text("Screen-off bridge: ${if (serviceRunning) "Active" else "Inactive"}")
+        Text(
+            "For iQOO/vivo, also enable Auto-start and unrestricted background power for this app.",
+            style = MaterialTheme.typography.bodyMedium
+        )
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onStart) {
@@ -396,6 +423,16 @@ private fun PhotoAiWorkbench(
                 }
             ) {
                 Text("Allow Background")
+            }
+        }
+
+        vendorBackgroundSettingsIntent?.let { intent ->
+            TextButton(
+                onClick = {
+                    backgroundSettingsLauncher.launch(intent)
+                }
+            ) {
+                Text("Background Power Settings")
             }
         }
 
@@ -542,6 +579,28 @@ private fun Context.appDetailsSettingsIntent(): Intent {
     return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
         data = Uri.parse("package:$packageName")
     }
+}
+
+private fun Context.vendorBackgroundSettingsIntent(): Intent? {
+    val candidates = listOf(
+        Intent().setComponent(
+            ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager")
+        ),
+        Intent().setComponent(
+            ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")
+        ),
+        Intent().setComponent(
+            ComponentName("com.vivo.abe", "com.vivo.applicationbehaviorengine.ui.ExcessivePowerManagerActivity")
+        ),
+        Intent().setComponent(
+            ComponentName("com.iqoo.powersaving", "com.iqoo.powersaving.PowerSavingManagerActivity")
+        ),
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+    )
+
+    return candidates
+        .map { intent -> intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        .firstOrNull { intent -> intent.resolveActivity(packageManager) != null }
 }
 
 private data class PhonePhotoTestState(

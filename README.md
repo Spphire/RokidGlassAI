@@ -193,6 +193,8 @@ adb -s 10AF1F0PST00419 logcat -d -v time -s MainActivity CodexRelayVisionClient 
 ## Runtime Notes
 
 - The phone activity is locked to portrait.
-- The phone bridge runs as a foreground service and requests battery optimization exemption.
+- The phone bridge runs as a foreground service with a `PARTIAL_WAKE_LOCK` so Bluetooth SPP can keep running while the phone is in the background or the screen is off.
+- On Android, grant Bluetooth permissions and allow notification permission when possible. Notification permission is not treated as a hard gate for starting the bridge, but a visible foreground notification makes the background service easier to monitor.
+- Disable battery optimization for the phone app from the in-app `Allow Background` action. On iQOO/vivo, also use `Background Power Settings` and enable auto-start plus unrestricted background power/background running for Rokid Photo AI.
 - If ADB only shows another device or `offline`, reconnect the iQOO and confirm USB debugging authorization before reading logs or installing.
 - Installs should be explicit and targeted; avoid installing to unrelated connected devices.
