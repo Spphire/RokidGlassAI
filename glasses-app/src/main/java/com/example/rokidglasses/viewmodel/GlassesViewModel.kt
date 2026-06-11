@@ -34,9 +34,6 @@ data class GlassesUiState(
     val statusText: String = "",
     val hintText: String = "",
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
-    val currentPage: Int = 0,
-    val totalPages: Int = 1,
-    val isPaginated: Boolean = false,
     val bluetoothState: BluetoothClientState = BluetoothClientState.DISCONNECTED,
     val connectedDeviceName: String? = null,
     val availableDevices: List<BluetoothDevice> = emptyList(),
@@ -53,8 +50,6 @@ class GlassesViewModel(
     private var cxrServiceManager: CxrServiceManager? = null
     private var photoTransferProtocol: PhotoTransferProtocol? = null
     private var autoConnectStarted = false
-
-    private var responsePages: List<String> = emptyList()
 
     private val _uiState = MutableStateFlow(
         GlassesUiState(
@@ -251,16 +246,12 @@ class GlassesViewModel(
                 Log.d(TAG, "Ignoring stale AI processing status after final result: $status")
                 currentState
             } else {
-                responsePages = emptyList()
                 currentState.copy(
-                isProcessing = true,
-                displayText = "",
+                    isProcessing = true,
+                    displayText = "",
                     statusText = status,
-                hintText = context.getString(R.string.please_wait_short),
-                currentPage = 0,
-                totalPages = 1,
-                isPaginated = false
-            )
+                    hintText = context.getString(R.string.please_wait_short)
+                )
             }
         }
     }
@@ -287,15 +278,11 @@ class GlassesViewModel(
     }
 
     private fun resetDisplay() {
-        responsePages = emptyList()
         _uiState.update {
             it.copy(
                 displayText = "",
                 statusText = context.getString(R.string.connected_ready),
                 hintText = context.getString(R.string.tap_touchpad_photo),
-                currentPage = 0,
-                totalPages = 1,
-                isPaginated = false,
                 isProcessing = false,
                 isCapturingPhoto = false,
                 photoTransferProgress = 0f
@@ -310,7 +297,6 @@ class GlassesViewModel(
     }
 
     private fun showAnalysisResult(text: String) {
-        responsePages = emptyList()
         val shouldShowScrollHint = text.length > SCROLL_HINT_TEXT_LENGTH
 
         _uiState.update {
@@ -324,79 +310,12 @@ class GlassesViewModel(
                     context.getString(R.string.swipe_for_more)
                 } else {
                     context.getString(R.string.tap_touchpad_photo)
-                },
-                currentPage = 0,
-                totalPages = 1,
-                isPaginated = false
-            )
-        }
-    }
-
-    private fun paginateText(text: String): List<String> {
-        if (text.isBlank()) return listOf("")
-        if (text.length <= MAX_CHARS_PER_PAGE) return listOf(text)
-
-        val breakChars = listOf('\n', ' ', '。', '，', '；', '、', ';', '.', ',')
-        val pages = mutableListOf<String>()
-        var index = 0
-        while (index < text.length) {
-            val hardEnd = minOf(index + MAX_CHARS_PER_PAGE, text.length)
-            var breakPoint = hardEnd
-            if (hardEnd < text.length) {
-                val naturalBreak = breakChars
-                    .map { text.lastIndexOf(it, hardEnd) }
-                    .filter { it > index }
-                    .maxOrNull()
-
-                if (naturalBreak != null) {
-                    breakPoint = naturalBreak + 1
-                }
-            }
-
-            pages.add(text.substring(index, breakPoint).trim())
-            index = breakPoint
-        }
-        return pages.filter { it.isNotBlank() }.ifEmpty { listOf(text.take(MAX_CHARS_PER_PAGE)) }
-    }
-
-    fun nextPage() {
-        val currentState = _uiState.value
-        if (!currentState.isPaginated || currentState.currentPage >= currentState.totalPages - 1) return
-
-        val newPage = currentState.currentPage + 1
-        _uiState.update {
-            it.copy(
-                currentPage = newPage,
-                displayText = responsePages.getOrElse(newPage) { "" },
-                hintText = if (newPage == currentState.totalPages - 1) {
-                    context.getString(R.string.tap_touchpad_photo)
-                } else {
-                    context.getString(R.string.swipe_for_more)
                 }
             )
         }
-    }
-
-    fun previousPage() {
-        val currentState = _uiState.value
-        if (!currentState.isPaginated || currentState.currentPage <= 0) return
-
-        val newPage = currentState.currentPage - 1
-        _uiState.update {
-            it.copy(
-                currentPage = newPage,
-                displayText = responsePages.getOrElse(newPage) { "" },
-                hintText = context.getString(R.string.swipe_for_more)
-            )
-        }
-    }
-
-    fun dismissPagination() {
-        resetDisplay()
     }
 
     fun captureDebugPhotoOnly() {
-        responsePages = emptyList()
         viewModelScope.launch {
             try {
                 _uiState.update {
@@ -406,9 +325,6 @@ class GlassesViewModel(
                         displayText = "",
                         statusText = "Debug capture",
                         hintText = context.getString(R.string.please_wait_short),
-                        currentPage = 0,
-                        totalPages = 1,
-                        isPaginated = false,
                         photoTransferProgress = 0f
                     )
                 }
@@ -484,7 +400,6 @@ class GlassesViewModel(
             return
         }
 
-        responsePages = emptyList()
         viewModelScope.launch {
             try {
                 _uiState.update {
@@ -494,9 +409,6 @@ class GlassesViewModel(
                         displayText = "",
                         statusText = context.getString(R.string.capturing_photo),
                         hintText = context.getString(R.string.please_wait_short),
-                        currentPage = 0,
-                        totalPages = 1,
-                        isPaginated = false,
                         photoTransferProgress = 0f
                     )
                 }
@@ -597,7 +509,6 @@ class GlassesViewModel(
 
     private companion object {
         private const val TAG = "GlassesViewModel"
-        private const val MAX_CHARS_PER_PAGE = 320
         private const val SCROLL_HINT_TEXT_LENGTH = 180
         private const val AUTO_CONNECT_INITIAL_DELAY_MS = 1_000L
         private const val AUTO_CONNECT_RETRIES_PER_DEVICE = 6

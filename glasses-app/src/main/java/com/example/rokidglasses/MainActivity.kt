@@ -335,9 +335,6 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                 hintText = uiState.hintText,
                 isProcessing = uiState.isProcessing,
                 photoTransferProgress = uiState.photoTransferProgress,
-                isPaginated = uiState.isPaginated,
-                currentPage = uiState.currentPage,
-                totalPages = uiState.totalPages,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -526,22 +523,11 @@ fun BottomStatusBar(
     hintText: String,
     isProcessing: Boolean,
     photoTransferProgress: Float,
-    isPaginated: Boolean,
-    currentPage: Int,
-    totalPages: Int,
     modifier: Modifier = Modifier
 ) {
     val deviceLabel = deviceName?.let { compactText(it, maxChars = 12) }
     val statusLine = compactText(statusText, maxChars = 34)
-    val hintLine = compactText(
-        if (isPaginated) stringResource(R.string.swipe_for_more) else hintText,
-        maxChars = 42
-    )
-    val pageLabel = if (isPaginated) {
-        stringResource(R.string.page_indicator, currentPage + 1, totalPages)
-    } else {
-        null
-    }
+    val hintLine = compactText(hintText, maxChars = 42)
     val progressLabel = if (isProcessing && photoTransferProgress > 0f && photoTransferProgress < 1f) {
         "${(photoTransferProgress * 100).toInt().coerceIn(1, 99)}%"
     } else {
@@ -589,15 +575,6 @@ fun BottomStatusBar(
                     modifier = Modifier.size(14.dp),
                     color = Color(0xFF64B5F6),
                     strokeWidth = 2.dp
-                )
-            }
-
-            if (pageLabel != null) {
-                Text(
-                    text = pageLabel,
-                    color = Color(0xFF64B5F6),
-                    fontSize = 11.sp,
-                    maxLines = 1
                 )
             }
         }
