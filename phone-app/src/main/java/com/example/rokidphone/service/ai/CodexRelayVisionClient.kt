@@ -101,34 +101,13 @@ class CodexRelayVisionClient(
             val imageBase64 = Base64.encodeToString(uploadImageData, Base64.NO_WRAP)
             val encodeMs = SystemClock.elapsedRealtime() - encodeStartMs
             val effectivePrompt = prompt.ifBlank { config.defaultPrompt }
-
-            report(AiRequestStage.BUILDING_REQUEST, "base64=${imageBase64.length} chars")
-            val body = JSONObject().apply {
-                put("model", config.model)
-                put("input", JSONArray().apply {
-                    put(JSONObject().apply {
-                        put("role", "user")
-                        put("content", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("type", "input_text")
-                                put("text", effectivePrompt)
-                            })
-                            put(JSONObject().apply {
-                                put("type", "input_image")
-                                put("image_url", "data:image/jpeg;base64,$imageBase64")
-                            })
-                        })
-                    })
-                })
-                put("max_output_tokens", settings.maxOutputTokens)
-                put("reasoning", JSONObject().apply {
-                    put("effort", settings.reasoningEffort)
-                })
-                put("text", JSONObject().apply {
-                    put("verbosity", settings.textVerbosity)
-                })
+            val providers = config.providers
+                .filter { it.normalizedBaseUrl.isNotBlank() && it.apiKey.isNotBlank() }
+            if (providers.isEmpty()) {
+                error("No AI relay providers are configured")
             }
 
+            report(AiRequestStage.BUILDING_REQUEST, "base64=${imageBase64.length} chars")
             Log.d(
                 TAG,
                     "AI request start: originalBytes=${imageData.size}, uploadBytes=${uploadImageData.size}, " +
@@ -136,104 +115,47 @@ class CodexRelayVisionClient(
                     "promptChars=${effectivePrompt.length}, maxOutputTokens=${settings.maxOutputTokens}, " +
                     "reasoning=${settings.reasoningEffort}, verbosity=${settings.textVerbosity}, " +
                     "maxImageSide=${settings.maxImageSidePx}, jpegQuality=${settings.jpegQuality}, " +
-                    "timeoutSeconds=${settings.timeoutSeconds}"
+                    "timeoutSeconds=${settings.timeoutSeconds}, providers=${providers.size}"
             )
-
-            val request = Request.Builder()
-                .url("${config.baseUrl}/v1/responses")
-                .addHeader("Authorization", "Bearer ${config.apiKey}")
-                .addHeader("Content-Type", "application/json")
-                .post(body.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val httpStartMs = SystemClock.elapsedRealtime()
 
             val retryDelays = retryDelaysMs.map { it.coerceAtLeast(0L) }
             val maxAttempts = retryDelays.size + 1
-            for (attempt in 1..maxAttempts) {
-                report(AiRequestStage.WAITING_FOR_RELAY, "timeout=${settings.timeoutSeconds}s attempt=$attempt/$maxAttempts")
-                val attemptStartMs = SystemClock.elapsedRealtime()
-                val relayResponse = try {
-                    client.newCall(request).awaitResponse().use { response ->
-                        RelayHttpResponse(
-                            code = response.code,
-                            isSuccessful = response.isSuccessful,
-                            body = response.body?.string().orEmpty(),
-                            retryAfterDelayMs = parseRetryAfterDelayMs(response.header("Retry-After"))
-                        )
-                    }
-                } catch (e: IOException) {
-                    val attemptMs = SystemClock.elapsedRealtime() - attemptStartMs
-                    Log.e(TAG, "Relay network error on attempt $attempt/$maxAttempts after ${attemptMs}ms", e)
-                    if (attempt < maxAttempts) {
-                        val delayMs = retryDelayMs(
-                            attempt = attempt,
-                            retryDelays = retryDelays,
-                            retryAfterDelayMs = null
-                        )
+            var lastFailure: Exception? = null
+            for ((providerIndex, provider) in providers.withIndex()) {
+                val providerName = provider.displayName(providerIndex)
+                try {
+                    val content = requestFromProvider(
+                        provider = provider,
+                        providerName = providerName,
+                        providerIndex = providerIndex,
+                        providerCount = providers.size,
+                        imageBase64 = imageBase64,
+                        prompt = effectivePrompt,
+                        settings = settings,
+                        retryDelays = retryDelays,
+                        maxAttempts = maxAttempts,
+                        totalStartMs = totalStartMs,
+                        report = ::report
+                    )
+                    val totalMs = SystemClock.elapsedRealtime() - totalStartMs
+                    report(AiRequestStage.COMPLETED, "provider=$providerName total=${totalMs}ms")
+                    return@withContext Result.success(content.ifBlank { "AI returned an empty response." })
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastFailure = e
+                    Log.e(TAG, "Relay provider $providerName failed", e)
+                    val nextProvider = providers.getOrNull(providerIndex + 1)
+                    if (nextProvider != null) {
                         report(
                             AiRequestStage.WAITING_FOR_RELAY,
-                            "retrying after network error in ${delayMs}ms attempt=$attempt/$maxAttempts"
+                            "provider=$providerName failed; switching to ${nextProvider.displayName(providerIndex + 1)}"
                         )
-                        delay(delayMs)
-                        continue
                     }
-                    val message = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
-                    error("AI request failed: network error $message${attemptSuffix(attempt)}")
                 }
-
-                val attemptMs = SystemClock.elapsedRealtime() - attemptStartMs
-                if (!relayResponse.isSuccessful) {
-                    Log.e(
-                        TAG,
-                        "Relay error ${relayResponse.code} on attempt $attempt/$maxAttempts " +
-                            "after ${attemptMs}ms: ${relayResponse.body.take(500)}"
-                    )
-                    if (isRetryableStatus(relayResponse.code) && attempt < maxAttempts) {
-                        val delayMs = retryDelayMs(
-                            attempt = attempt,
-                            retryDelays = retryDelays,
-                            retryAfterDelayMs = relayResponse.retryAfterDelayMs
-                        )
-                        val retryAfterDetail = relayResponse.retryAfterDelayMs
-                            ?.let { ", retry-after=${it}ms" }
-                            .orEmpty()
-                        report(
-                            AiRequestStage.WAITING_FOR_RELAY,
-                            "retrying after HTTP ${relayResponse.code} in ${delayMs}ms$retryAfterDetail attempt=$attempt/$maxAttempts"
-                        )
-                        delay(delayMs)
-                        continue
-                    }
-                    error(httpFailureMessage(relayResponse.code, attempt))
-                }
-
-                val httpMs = SystemClock.elapsedRealtime() - httpStartMs
-                report(AiRequestStage.PARSING_RESPONSE, "httpMs=${httpMs}ms attempt=$attempt/$maxAttempts")
-                val parseStartMs = SystemClock.elapsedRealtime()
-                val json = JSONObject(relayResponse.body)
-                val content = extractOutputText(json)
-                if (content.isBlank()) {
-                    Log.w(
-                        TAG,
-                        "AI response contained no output text: status=${json.optString("status")}, " +
-                            "body=${relayResponse.body.take(1_500)}"
-                    )
-                }
-                val parseMs = SystemClock.elapsedRealtime() - parseStartMs
-                val totalMs = SystemClock.elapsedRealtime() - totalStartMs
-
-                Log.d(
-                    TAG,
-                    "AI request done: httpMs=$httpMs, parseMs=$parseMs, totalMs=$totalMs, " +
-                        "responseChars=${content.length}"
-                )
-
-                report(AiRequestStage.COMPLETED, "total=${totalMs}ms")
-                return@withContext Result.success(content.ifBlank { "AI returned an empty response." })
             }
 
-            error("AI request failed after $maxAttempts attempts")
+            error(providerFailureMessage(providers.size, lastFailure))
         } catch (e: CancellationException) {
             Log.w(TAG, "AI request cancelled at ${lastProgress.toStatusText()}")
             throw e
@@ -241,6 +163,144 @@ class CodexRelayVisionClient(
             Log.e(TAG, "AI request failed at ${lastProgress.toStatusText()}", e)
             Result.failure(e)
         }
+    }
+
+    private suspend fun requestFromProvider(
+        provider: VisionRelayProvider,
+        providerName: String,
+        providerIndex: Int,
+        providerCount: Int,
+        imageBase64: String,
+        prompt: String,
+        settings: AiRequestSettings,
+        retryDelays: List<Long>,
+        maxAttempts: Int,
+        totalStartMs: Long,
+        report: (AiRequestStage, String) -> Unit
+    ): String {
+        val body = JSONObject().apply {
+            put("model", provider.model)
+            put("input", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("type", "input_text")
+                            put("text", prompt)
+                        })
+                        put(JSONObject().apply {
+                            put("type", "input_image")
+                            put("image_url", "data:image/jpeg;base64,$imageBase64")
+                        })
+                    })
+                })
+            })
+            put("max_output_tokens", settings.maxOutputTokens)
+            put("reasoning", JSONObject().apply {
+                put("effort", settings.reasoningEffort)
+            })
+            put("text", JSONObject().apply {
+                put("verbosity", settings.textVerbosity)
+            })
+        }
+
+        val request = Request.Builder()
+            .url("${provider.normalizedBaseUrl}/v1/responses")
+            .addHeader("Authorization", "Bearer ${provider.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val httpStartMs = SystemClock.elapsedRealtime()
+        for (attempt in 1..maxAttempts) {
+            report(
+                AiRequestStage.WAITING_FOR_RELAY,
+                "provider=$providerName ${providerIndex + 1}/$providerCount timeout=${settings.timeoutSeconds}s attempt=$attempt/$maxAttempts"
+            )
+            val attemptStartMs = SystemClock.elapsedRealtime()
+            val relayResponse = try {
+                client.newCall(request).awaitResponse().use { response ->
+                    RelayHttpResponse(
+                        code = response.code,
+                        isSuccessful = response.isSuccessful,
+                        body = response.body?.string().orEmpty(),
+                        retryAfterDelayMs = parseRetryAfterDelayMs(response.header("Retry-After"))
+                    )
+                }
+            } catch (e: IOException) {
+                val attemptMs = SystemClock.elapsedRealtime() - attemptStartMs
+                Log.e(TAG, "Relay $providerName network error on attempt $attempt/$maxAttempts after ${attemptMs}ms", e)
+                if (attempt < maxAttempts) {
+                    val delayMs = retryDelayMs(
+                        attempt = attempt,
+                        retryDelays = retryDelays,
+                        retryAfterDelayMs = null
+                    )
+                    report(
+                        AiRequestStage.WAITING_FOR_RELAY,
+                        "provider=$providerName retrying after network error in ${delayMs}ms attempt=$attempt/$maxAttempts"
+                    )
+                    delay(delayMs)
+                    continue
+                }
+                val message = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                error("AI request failed via $providerName: network error $message${attemptSuffix(attempt)}")
+            }
+
+            val attemptMs = SystemClock.elapsedRealtime() - attemptStartMs
+            if (!relayResponse.isSuccessful) {
+                Log.e(
+                    TAG,
+                    "Relay $providerName error ${relayResponse.code} on attempt $attempt/$maxAttempts " +
+                        "after ${attemptMs}ms: ${relayResponse.body.take(500)}"
+                )
+                if (isRetryableStatus(relayResponse.code) && attempt < maxAttempts) {
+                    val delayMs = retryDelayMs(
+                        attempt = attempt,
+                        retryDelays = retryDelays,
+                        retryAfterDelayMs = relayResponse.retryAfterDelayMs
+                    )
+                    val retryAfterDetail = relayResponse.retryAfterDelayMs
+                        ?.let { ", retry-after=${it}ms" }
+                        .orEmpty()
+                    report(
+                        AiRequestStage.WAITING_FOR_RELAY,
+                        "provider=$providerName retrying after HTTP ${relayResponse.code} in ${delayMs}ms$retryAfterDetail attempt=$attempt/$maxAttempts"
+                    )
+                    delay(delayMs)
+                    continue
+                }
+                error(httpFailureMessage(relayResponse.code, attempt, providerName))
+            }
+
+            val httpMs = SystemClock.elapsedRealtime() - httpStartMs
+            report(
+                AiRequestStage.PARSING_RESPONSE,
+                "provider=$providerName httpMs=${httpMs}ms attempt=$attempt/$maxAttempts"
+            )
+            val parseStartMs = SystemClock.elapsedRealtime()
+            val json = JSONObject(relayResponse.body)
+            val content = extractOutputText(json)
+            if (content.isBlank()) {
+                Log.w(
+                    TAG,
+                    "AI response from $providerName contained no output text: status=${json.optString("status")}, " +
+                        "body=${relayResponse.body.take(1_500)}"
+                )
+            }
+            val parseMs = SystemClock.elapsedRealtime() - parseStartMs
+            val totalMs = SystemClock.elapsedRealtime() - totalStartMs
+
+            Log.d(
+                TAG,
+                "AI request done via $providerName: httpMs=$httpMs, parseMs=$parseMs, totalMs=$totalMs, " +
+                    "responseChars=${content.length}"
+            )
+
+            return content
+        }
+
+        error("AI request failed via $providerName after $maxAttempts attempts")
     }
 
     private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
@@ -470,17 +530,25 @@ class CodexRelayVisionClient(
         }.getOrNull()
     }
 
-    private fun httpFailureMessage(code: Int, attempt: Int): String {
+    private fun httpFailureMessage(code: Int, attempt: Int, providerName: String): String {
         val suffix = attemptSuffix(attempt)
         return if (isRetryableStatus(code)) {
-            "AI relay temporarily failed (HTTP $code)$suffix. Please try again."
+            "AI relay $providerName temporarily failed (HTTP $code)$suffix"
         } else {
-            "AI request failed: HTTP $code$suffix"
+            "AI request failed via $providerName: HTTP $code$suffix"
         }
     }
 
     private fun attemptSuffix(attempt: Int): String =
         if (attempt > 1) " after $attempt attempts" else ""
+
+    private fun providerFailureMessage(providerCount: Int, lastFailure: Exception?): String {
+        val suffix = lastFailure?.message?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+        return "All AI relay providers failed ($providerCount)$suffix"
+    }
+
+    private fun VisionRelayProvider.displayName(index: Int): String =
+        name.ifBlank { "provider-${index + 1}" }
 
     private data class RelayHttpResponse(
         val code: Int,

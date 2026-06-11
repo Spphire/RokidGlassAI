@@ -38,6 +38,7 @@ Gradle includes only `:common`, `:phone-app`, and `:glasses-app`.
 Main functions:
 
 - Edit and persist the default vision prompt.
+- Select a local knowledge-base context for AI requests: `Software Engineering`, `French TCF/TEF`, or `None`.
 - Tune request parameters: reasoning effort, verbosity, output tokens, upload image side, JPEG quality, and timeout.
 - Run `Take Phone Photo and Test AI`, which compresses the phone image like a glasses image before calling AI.
 - Run a foreground Bluetooth bridge service so the phone can keep receiving photos in the background.
@@ -48,6 +49,36 @@ Default prompt:
 ```text
 帮我回答图中的题目：如果是客观题，仅给出正确选项以及一句话的解释；如果是主观题，分点精简回答去除AI味并以研究生的口吻
 ```
+
+## Knowledge Base Assets
+
+The phone app ships compact text snapshots in `phone-app/src/main/assets/knowledge_bases/`.
+The UI persists the selected knowledge base and injects selected snippets into both the phone-camera test path and the glasses-photo analysis path.
+
+Default source folders used by the sync script:
+
+```text
+Software Engineering: C:\Users\Apricity\Desktop\软件工程课程小作业
+French TCF/TEF:       F:\tcftef
+```
+
+Create the project-local Python environment and regenerate the assets:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r scripts\requirements-knowledge.txt
+.\.venv\Scripts\python.exe scripts\sync_knowledge_bases.py
+```
+
+You can override either source path:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\sync_knowledge_bases.py `
+  --software-root "C:\Users\Apricity\Desktop\软件工程课程小作业" `
+  --french-root "F:\tcftef"
+```
+
+The generated assets contain excerpts from local study materials. Review them before pushing to a public repository.
 
 ## Glasses App
 
@@ -63,19 +94,22 @@ The current sender path is best-effort for normal transfers. The phone can emit 
 
 ## AI Relay Config
 
-The phone relay client reads values from `local.properties`, with debug defaults in `phone-app/build.gradle.kts`.
+The phone relay client reads values from `local.properties`, with debug defaults in `phone-app/build.gradle.kts`. It tries the primary relay first, then falls back to the secondary relay when the primary request fails.
 
 ```properties
 CODEX_RELAY_URL=https://api.20021004.xyz
 CODEX_RELAY_API_KEY=sk-your-codex-relay-key
 CODEX_RELAY_MODEL=gpt-5.5
+CODEX_RELAY_FALLBACK_URL=https://api.aicodemirror.com/api/codex/backend-api/codex
+CODEX_RELAY_FALLBACK_API_KEY=sk-your-fallback-codex-relay-key
+CODEX_RELAY_FALLBACK_MODEL=gpt-5.5
 DEFAULT_VISION_PROMPT=帮我回答图中的题目：如果是客观题，仅给出正确选项以及一句话的解释；如果是主观题，分点精简回答去除AI味并以研究生的口吻
 ```
 
 The request uses:
 
-- Endpoint: `POST {CODEX_RELAY_URL}/v1/responses`
-- Authorization: `Bearer {CODEX_RELAY_API_KEY}`
+- Endpoint: `POST {configured relay URL}/v1/responses`
+- Authorization: `Bearer {configured relay API key}`
 - Input content: `input_text` prompt plus `input_image` data URL
 - Tunable fields: `reasoning.effort`, `text.verbosity`, `max_output_tokens`
 
@@ -119,14 +153,24 @@ adb -s 10AF1F0PST00419 install -r -g phone-app\build\outputs\apk\debug\phone-app
 adb -s 10AF1F0PST00419 shell monkey -p com.example.rokidphone 1
 ```
 
+If install fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, the phone already has the same package installed with a different signing key. Uninstall the existing package first only if it is OK to lose that app's local data, or rebuild with the original signing key.
+
+For a non-destructive UI check, you can temporarily add this to `local.properties` and rebuild. It installs beside the existing app instead of replacing it:
+
+```properties
+PHONE_DEBUG_APPLICATION_ID_SUFFIX=.kbtest
+PHONE_DEBUG_VERSION_NAME_SUFFIX=-kbtest
+```
+
 ## Manual Test Checklist
 
 1. Phone-only AI path
    - Launch phone app.
-   - Confirm URL/model/prompt are shown.
+   - Confirm URL/model/prompt and the knowledge-base selector are shown.
+   - Pick `Software Engineering`, `French TCF/TEF`, or `None`.
    - Set `Fast` preset first: reasoning `minimal`, timeout `25s`.
    - Tap `Take Phone Photo and Test AI`.
-   - Verify the status changes from reading photo, to glasses simulation, to calling AI, then result or timeout.
+   - Verify the status changes from reading photo, to glasses simulation, to knowledge-base context, to calling AI, then result or timeout.
 
 2. Timeout/quality path
    - For `medium` or `high` reasoning, raise timeout to `60-120s`.
@@ -138,7 +182,7 @@ adb -s 10AF1F0PST00419 shell monkey -p com.example.rokidphone 1
    - Start the phone bridge service.
    - Connect glasses to the phone.
    - Trigger capture on glasses or press `Ask Glasses to Capture and Analyze` on phone.
-   - Verify photo transfer progress, AI status, and result display.
+   - Verify photo transfer progress, selected knowledge-base status, AI status, and result display.
 
 Useful logcat filters:
 

@@ -5,7 +5,15 @@
 CODEX_RELAY_URL=https://api.20021004.xyz
 CODEX_RELAY_API_KEY=sk-your-codex-relay-key
 CODEX_RELAY_MODEL=gpt-5.5
+CODEX_RELAY_FALLBACK_URL=https://api.aicodemirror.com/api/codex/backend-api/codex
+CODEX_RELAY_FALLBACK_API_KEY=sk-your-fallback-codex-relay-key
+CODEX_RELAY_FALLBACK_MODEL=gpt-5.5
 DEFAULT_VISION_PROMPT=帮我回答图中的题目：如果是客观题，仅给出正确选项以及一句话的解释；如果是主观题，分点精简回答去除AI味并以研究生的口吻
+
+# Optional debug-only suffix. Useful when you want to install a temporary build
+# beside an existing com.example.rokidphone package with a different signing key.
+# PHONE_DEBUG_APPLICATION_ID_SUFFIX=.kbtest
+# PHONE_DEBUG_VERSION_NAME_SUFFIX=-kbtest
 
 # Release signing (required only when you need signed release builds).
 RELEASE_STORE_FILE=path/to/your/keystore.jks

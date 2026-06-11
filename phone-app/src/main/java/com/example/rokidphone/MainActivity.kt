@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +55,9 @@ import com.example.rokidphone.service.ai.AiRequestSettings
 import com.example.rokidphone.service.ai.AiRequestSettingsStore
 import com.example.rokidphone.service.ai.CodexRelayConfig
 import com.example.rokidphone.service.ai.CodexRelayVisionClient
+import com.example.rokidphone.service.ai.KnowledgeBaseProfile
+import com.example.rokidphone.service.ai.KnowledgeBaseRepository
+import com.example.rokidphone.service.ai.KnowledgeBaseStore
 import com.example.rokidphone.service.ai.PromptStore
 import com.example.rokidphone.service.photo.GlassesPhotoSimulator
 import kotlinx.coroutines.CancellationException
@@ -144,6 +148,11 @@ private fun PhotoAiWorkbench(
     var maxImageSidePx by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_MAX_IMAGE_SIDE_PX.toString()) }
     var jpegQuality by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_JPEG_QUALITY.toString()) }
     var timeoutSeconds by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_TIMEOUT_SECONDS.toString()) }
+    var selectedKnowledgeBaseId by rememberSaveable {
+        mutableStateOf(KnowledgeBaseStore.SOFTWARE_ENGINEERING_ID)
+    }
+    var knowledgeBaseProfiles by remember { mutableStateOf<List<KnowledgeBaseProfile>>(emptyList()) }
+    var knowledgeBaseStatus by remember { mutableStateOf("Loading knowledge bases...") }
     var pendingPhotoUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var batteryOptimized by remember { mutableStateOf(context.isBatteryOptimizationActive()) }
     val backgroundSettingsLauncher = rememberLauncherForActivityResult(
@@ -163,6 +172,9 @@ private fun PhotoAiWorkbench(
         maxImageSidePx = settings.maxImageSidePx.toString()
         jpegQuality = settings.jpegQuality.toString()
         timeoutSeconds = settings.timeoutSeconds.toString()
+        selectedKnowledgeBaseId = KnowledgeBaseStore.getSelectedKnowledgeBaseId(context)
+        knowledgeBaseProfiles = KnowledgeBaseRepository.loadProfiles(context)
+        knowledgeBaseStatus = knowledgeBaseProfiles.knowledgeBaseStatusText(selectedKnowledgeBaseId)
     }
 
     fun currentAiSettings(): AiRequestSettings {
@@ -191,6 +203,12 @@ private fun PhotoAiWorkbench(
         AiRequestSettingsStore.saveSettings(context, normalized)
     }
 
+    fun selectKnowledgeBase(knowledgeBaseId: String) {
+        selectedKnowledgeBaseId = knowledgeBaseId
+        KnowledgeBaseStore.saveSelectedKnowledgeBaseId(context, knowledgeBaseId)
+        knowledgeBaseStatus = knowledgeBaseProfiles.knowledgeBaseStatusText(knowledgeBaseId)
+    }
+
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { success ->
@@ -203,7 +221,14 @@ private fun PhotoAiWorkbench(
 
         PromptStore.savePrompt(context, prompt)
         saveAiSettings()
-        PhonePhotoTestRunner.start(context, photoUri, prompt, currentAiSettings())
+        KnowledgeBaseStore.saveSelectedKnowledgeBaseId(context, selectedKnowledgeBaseId)
+        PhonePhotoTestRunner.start(
+            context = context,
+            photoUri = photoUri,
+            prompt = prompt,
+            aiSettings = currentAiSettings(),
+            knowledgeBaseId = selectedKnowledgeBaseId
+        )
         pendingPhotoUriString = null
     }
 
@@ -231,8 +256,18 @@ private fun PhotoAiWorkbench(
         Text("Rokid Photo AI", style = MaterialTheme.typography.headlineMedium)
 
         Text("AI Relay", style = MaterialTheme.typography.titleMedium)
-        Text("URL: ${CodexRelayConfig.baseUrl}")
-        Text("Model: ${CodexRelayConfig.model}")
+        Text("Providers: ${CodexRelayConfig.providers.size}")
+        Text("Primary URL: ${CodexRelayConfig.baseUrl}")
+        Text("Primary model: ${CodexRelayConfig.model}")
+
+        Text("Knowledge Base", style = MaterialTheme.typography.titleMedium)
+        KnowledgeBaseSelector(
+            profiles = knowledgeBaseProfiles,
+            selectedId = selectedKnowledgeBaseId,
+            onSelected = ::selectKnowledgeBase
+        )
+        Text(knowledgeBaseStatus, style = MaterialTheme.typography.bodyMedium)
+
         OutlinedTextField(
             modifier = Modifier.fillMaxWidth(),
             value = prompt,
@@ -312,6 +347,7 @@ private fun PhotoAiWorkbench(
             onClick = {
                 PromptStore.savePrompt(context, prompt)
                 saveAiSettings()
+                KnowledgeBaseStore.saveSelectedKnowledgeBaseId(context, selectedKnowledgeBaseId)
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
                     == PackageManager.PERMISSION_GRANTED
                 ) {
@@ -337,7 +373,8 @@ private fun PhotoAiWorkbench(
         Text("Bluetooth: ${bluetoothState.toDisplayText()}")
         Text("Device: ${deviceName ?: "None"}")
         Text("Latest: $processingStatus")
-        Text("Background: ${if (batteryOptimized) "Battery optimized" else "Allowed"}")
+        Text("Background: ${if (batteryOptimized) "Restricted" else "Allowed"}")
+        Text("Screen-off bridge: ${if (serviceRunning) "Active" else "Inactive"}")
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onStart) {
@@ -362,12 +399,21 @@ private fun PhotoAiWorkbench(
             }
         }
 
+        TextButton(
+            onClick = {
+                backgroundSettingsLauncher.launch(context.appDetailsSettingsIntent())
+            }
+        ) {
+            Text("App Settings")
+        }
+
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = serviceRunning && bluetoothState == BluetoothConnectionState.CONNECTED,
             onClick = {
                 PromptStore.savePrompt(context, prompt)
                 saveAiSettings()
+                KnowledgeBaseStore.saveSelectedKnowledgeBaseId(context, selectedKnowledgeBaseId)
                 scope.launch {
                     ServiceBridge.requestCapturePhoto()
                 }
@@ -377,6 +423,40 @@ private fun PhotoAiWorkbench(
         }
 
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun KnowledgeBaseSelector(
+    profiles: List<KnowledgeBaseProfile>,
+    selectedId: String,
+    onSelected: (String) -> Unit
+) {
+    val options = listOf(
+        KnowledgeBaseProfile(
+            id = KnowledgeBaseStore.NONE_ID,
+            name = "None",
+            description = "Use only the preset prompt.",
+            asset = ""
+        )
+    ) + profiles
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.forEach { profile ->
+            val selected = profile.id == selectedId
+            if (selected) {
+                Button(modifier = Modifier.fillMaxWidth(), onClick = { onSelected(profile.id) }) {
+                    Text(profile.name)
+                }
+            } else {
+                ElevatedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onSelected(profile.id) }
+                ) {
+                    Text(profile.name)
+                }
+            }
+        }
     }
 }
 
@@ -419,6 +499,20 @@ private fun NumberField(
         singleLine = true,
         label = { Text(label) }
     )
+}
+
+private fun List<KnowledgeBaseProfile>.knowledgeBaseStatusText(selectedId: String): String {
+    if (selectedId == KnowledgeBaseStore.NONE_ID) {
+        return "No knowledge base context will be attached."
+    }
+    val profile = firstOrNull { it.id == selectedId }
+        ?: return "Knowledge base assets are not ready yet."
+    val size = if (profile.chunkCount > 0) {
+        "${profile.chunkCount} chunks, ${profile.includedChars} chars"
+    } else {
+        "asset configured"
+    }
+    return "${profile.description} ($size)"
 }
 
 private fun android.content.Context.createTempPhotoUri(): Uri {
@@ -465,7 +559,13 @@ private object PhonePhotoTestRunner {
         _state.value = _state.value.copy(message = message)
     }
 
-    fun start(context: Context, photoUri: Uri, prompt: String, aiSettings: AiRequestSettings) {
+    fun start(
+        context: Context,
+        photoUri: Uri,
+        prompt: String,
+        aiSettings: AiRequestSettings,
+        knowledgeBaseId: String
+    ) {
         if (_state.value.isTesting) {
             _state.value = _state.value.copy(message = "AI test is already running.")
             return
@@ -497,11 +597,25 @@ private object PhonePhotoTestRunner {
                 Log.d(TAG, "Phone glasses simulation: $summary")
 
                 _state.value = PhonePhotoTestState("$summary\nCalling AI...", true)
+                val knowledgePrompt = KnowledgeBaseRepository.buildPrompt(
+                    appContext,
+                    prompt,
+                    knowledgeBaseId
+                )
+                val knowledgeStatus = knowledgePrompt.profile?.let { profile ->
+                    "Using ${profile.name}: ${knowledgePrompt.contextChars} context chars from ${knowledgePrompt.sourceCount} sources."
+                } ?: "Knowledge base disabled."
+                Log.d(TAG, "Phone AI test knowledge base: $knowledgeStatus")
+                _state.value = PhonePhotoTestState("$summary\n$knowledgeStatus\nCalling AI...", true)
+
                 var lastAiProgress = "Starting AI request"
                 val result = withTimeoutOrNull(aiSettings.timeoutSeconds * 1_000L) {
-                    visionClient.analyze(simulatedPhoto.data, prompt, aiSettings) { progress ->
+                    visionClient.analyze(simulatedPhoto.data, knowledgePrompt.prompt, aiSettings) { progress ->
                         lastAiProgress = progress.toStatusText()
-                        _state.value = PhonePhotoTestState("$summary\n$lastAiProgress", true)
+                        _state.value = PhonePhotoTestState(
+                            "$summary\n$knowledgeStatus\n$lastAiProgress",
+                            true
+                        )
                     }
                 }
 

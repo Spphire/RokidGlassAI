@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "generatedAt": "2026-06-10T16:45:30.294766+00:00",
+  "profiles": [
+    {
+      "id": "software_engineering",
+      "name": "Software Engineering",
+      "description": "Course notes, review material, and assignment references.",
+      "asset": "knowledge_bases/software_engineering.json",
+      "chunkCount": 158,
+      "includedChars": 240000
+    },
+    {
+      "id": "french",
+      "name": "French TCF/TEF",
+      "description": "French reading, vocabulary, TCF/TEF practice, and OCR notes.",
+      "asset": "knowledge_bases/french.json",
+      "chunkCount": 322,
+      "includedChars": 240000
+    }
+  ]
+}

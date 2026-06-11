@@ -195,6 +195,56 @@ class CodexRelayVisionClientTest {
     }
 
     @Test
+    fun `analyze falls back to next provider when primary fails`() = runTest {
+        val fallbackServer = MockWebServer()
+        fallbackServer.start()
+        try {
+            client = CodexRelayVisionClient(
+                config = TestRelayConfig(
+                    providers = listOf(
+                        VisionRelayProvider(
+                            name = "primary",
+                            baseUrl = server.url("/").toString().trimEnd('/'),
+                            apiKey = "primary-key",
+                            model = "primary-model"
+                        ),
+                        VisionRelayProvider(
+                            name = "fallback",
+                            baseUrl = fallbackServer.url("/").toString().trimEnd('/'),
+                            apiKey = "fallback-key",
+                            model = "fallback-model"
+                        )
+                    )
+                ),
+                retryDelaysMs = emptyList()
+            )
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(500)
+                    .setBody("""{"error":{"message":"primary down"}}""")
+            )
+            fallbackServer.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setBody("""{"output_text":"fallback answer"}""")
+            )
+
+            val result = client.analyze(byteArrayOf(1, 2, 3), "prompt")
+
+            assertThat(result.getOrThrow()).isEqualTo("fallback answer")
+            assertThat(server.requestCount).isEqualTo(1)
+            assertThat(fallbackServer.requestCount).isEqualTo(1)
+            assertThat(server.takeRequest().getHeader("Authorization")).isEqualTo("Bearer primary-key")
+            val fallbackRequest = fallbackServer.takeRequest()
+            assertThat(fallbackRequest.getHeader("Authorization")).isEqualTo("Bearer fallback-key")
+            val fallbackBody = JSONObject(fallbackRequest.body.readUtf8())
+            assertThat(fallbackBody.getString("model")).isEqualTo("fallback-model")
+        } finally {
+            fallbackServer.shutdown()
+        }
+    }
+
+    @Test
     fun `analyze returns failure after retryable relay errors are exhausted`() = runTest {
         client = CodexRelayVisionClient(
             config = TestRelayConfig(baseUrl = server.url("/").toString().trimEnd('/')),
@@ -225,10 +275,20 @@ class CodexRelayVisionClientTest {
         assertThat(server.requestCount).isEqualTo(0)
     }
 
-    private data class TestRelayConfig(
-        override val baseUrl: String,
-        override val apiKey: String = "test-api-key",
-        override val model: String = "test-model",
-        override val defaultPrompt: String = "default prompt"
-    ) : VisionRelayConfig
+    private class TestRelayConfig(
+        baseUrl: String = "https://example.invalid",
+        apiKey: String = "test-api-key",
+        model: String = "test-model",
+        override val defaultPrompt: String = "default prompt",
+        providers: List<VisionRelayProvider>? = null
+    ) : VisionRelayConfig {
+        override val providers: List<VisionRelayProvider> = providers ?: listOf(
+            VisionRelayProvider(
+                name = "test",
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                model = model
+            )
+        )
+    }
 }

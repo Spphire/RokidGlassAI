@@ -17,12 +17,32 @@ android {
     val localPropsFile = rootProject.file("local.properties")
     val localProps = Properties().apply {
         if (localPropsFile.exists()) {
-            localPropsFile.inputStream().use { load(it) }
+            localPropsFile.reader(Charsets.UTF_8).use { load(it) }
         }
     }
     fun localProperty(name: String): String? = localProps.getProperty(name)?.takeIf { it.isNotBlank() }
     fun buildConfigString(value: String): String =
-        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        buildString {
+            append('"')
+            value.forEach { char ->
+                when (char) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> {
+                        if (char.code in 0x20..0x7e) {
+                            append(char)
+                        } else {
+                            append("\\u")
+                            append(char.code.toString(16).padStart(4, '0'))
+                        }
+                    }
+                }
+            }
+            append('"')
+        }
 
     val releaseStoreFile = localProperty("RELEASE_STORE_FILE")
     val releaseStorePassword = localProperty("RELEASE_STORE_PASSWORD")
@@ -50,6 +70,15 @@ android {
             ""
         )
         val codexRelayModel = localProps.getProperty("CODEX_RELAY_MODEL", "gpt-5.5")
+        val codexRelayFallbackUrl = localProps.getProperty("CODEX_RELAY_FALLBACK_URL", "")
+        val codexRelayFallbackApiKey = localProps.getProperty(
+            "CODEX_RELAY_FALLBACK_API_KEY",
+            ""
+        )
+        val codexRelayFallbackModel = localProps.getProperty(
+            "CODEX_RELAY_FALLBACK_MODEL",
+            codexRelayModel
+        )
         val defaultVisionPrompt = localProps.getProperty(
             "DEFAULT_VISION_PROMPT",
             "\u5e2e\u6211\u56de\u7b54\u56fe\u4e2d\u7684\u9898\u76ee\uff1a\u5982\u679c\u662f\u5ba2\u89c2\u9898\uff0c\u4ec5\u7ed9\u51fa\u6b63\u786e\u9009\u9879\u4ee5\u53ca\u4e00\u53e5\u8bdd\u7684\u89e3\u91ca\uff1b\u5982\u679c\u662f\u4e3b\u89c2\u9898\uff0c\u5206\u70b9\u7cbe\u7b80\u56de\u7b54\u53bb\u9664AI\u5473\u5e76\u4ee5\u7814\u7a76\u751f\u7684\u53e3\u543b"
@@ -58,6 +87,9 @@ android {
         buildConfigField("String", "CODEX_RELAY_URL", buildConfigString(codexRelayUrl))
         buildConfigField("String", "CODEX_RELAY_API_KEY", buildConfigString(codexRelayApiKey))
         buildConfigField("String", "CODEX_RELAY_MODEL", buildConfigString(codexRelayModel))
+        buildConfigField("String", "CODEX_RELAY_FALLBACK_URL", buildConfigString(codexRelayFallbackUrl))
+        buildConfigField("String", "CODEX_RELAY_FALLBACK_API_KEY", buildConfigString(codexRelayFallbackApiKey))
+        buildConfigField("String", "CODEX_RELAY_FALLBACK_MODEL", buildConfigString(codexRelayFallbackModel))
         buildConfigField("String", "DEFAULT_VISION_PROMPT", buildConfigString(defaultVisionPrompt))
     }
 
@@ -75,6 +107,12 @@ android {
     buildTypes {
         debug {
             enableUnitTestCoverage = true
+            localProperty("PHONE_DEBUG_APPLICATION_ID_SUFFIX")?.let { suffix ->
+                applicationIdSuffix = if (suffix.startsWith(".")) suffix else ".$suffix"
+            }
+            localProperty("PHONE_DEBUG_VERSION_NAME_SUFFIX")?.let { suffix ->
+                versionNameSuffix = suffix
+            }
         }
 
         release {

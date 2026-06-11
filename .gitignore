@@ -20,6 +20,9 @@ release/
 .gradle/
 build/
 
+# Project-local Python environment for helper scripts
+.venv/
+
 # Local configuration file (sdk path, etc)
 local.properties
 
@@ -94,6 +97,7 @@ credentials.json
 app/src/main/res/raw/sn_auth_file.lc
 
 # Local debug captures pulled from devices
+/tmp/
 /glasses_photo_*.jpg
 /install_prompt.png
 /latest_glasses_photo*.jpg

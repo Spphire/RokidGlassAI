@@ -7,8 +7,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.getSystemService
 import com.example.rokidcommon.Constants
 import com.example.rokidcommon.protocol.Message
 import com.example.rokidcommon.protocol.MessageType
@@ -16,6 +19,8 @@ import com.example.rokidcommon.protocol.photo.PhotoTransferState
 import com.example.rokidphone.R
 import com.example.rokidphone.service.ai.AiRequestSettingsStore
 import com.example.rokidphone.service.ai.CodexRelayVisionClient
+import com.example.rokidphone.service.ai.KnowledgeBaseRepository
+import com.example.rokidphone.service.ai.KnowledgeBaseStore
 import com.example.rokidphone.service.ai.PromptStore
 import com.example.rokidphone.service.photo.PhotoRepository
 import com.example.rokidphone.service.photo.ReceivedPhoto
@@ -34,12 +39,14 @@ class PhoneAIService : Service() {
     private val visionClient = CodexRelayVisionClient()
     private val photoRepository by lazy { PhotoRepository(this, serviceScope) }
     private var bluetoothManager: BluetoothSppManager? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
         PhoneAIServiceRuntimeState.record(this, "service onCreate")
         NotificationChannels.ensureServiceChannel(this)
-        startForeground(Constants.NOTIFICATION_ID, createNotification("Waiting for glasses"))
+        startBridgeForeground("Waiting for glasses")
+        acquireBridgeWakeLock("service create")
         ServiceBridge.updateServiceState(true)
         startBluetoothBridge()
     }
@@ -87,6 +94,7 @@ class PhoneAIService : Service() {
         )
         ServiceBridge.updateServiceState(false)
         bluetoothManager?.disconnect(restartListening = false)
+        releaseBridgeWakeLock("service destroy")
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -157,6 +165,7 @@ class PhoneAIService : Service() {
         serviceScope.launch {
             while (true) {
                 delay(BLUETOOTH_WATCHDOG_INTERVAL_MS)
+                acquireBridgeWakeLock("watchdog")
                 if (!PhoneAIServiceRunPolicy.isAutoRunEnabled(this@PhoneAIService)) {
                     Log.d(TAG, "Auto-run disabled; stopping watchdog and service")
                     PhoneAIServiceRuntimeState.record(
@@ -205,11 +214,18 @@ class PhoneAIService : Service() {
 
         val prompt = PromptStore.getPrompt(this)
         val aiSettings = AiRequestSettingsStore.getSettings(this)
+        val knowledgeBaseId = KnowledgeBaseStore.getSelectedKnowledgeBaseId(this)
+        val knowledgePrompt = KnowledgeBaseRepository.buildPrompt(this, prompt, knowledgeBaseId)
+        knowledgePrompt.profile?.let { profile ->
+            val status = "Using ${profile.name} knowledge base (${knowledgePrompt.contextChars} chars)"
+            ServiceBridge.updateProcessingStatus(status)
+            manager.sendMessage(Message.aiProcessing(status))
+        }
         val aiTimeoutMs = effectiveAiAnalysisTimeoutMs(aiSettings.timeoutSeconds)
         var lastAiProgress = "Starting AI request"
         var progressSendJob: Job? = null
         val result = withTimeoutOrNull(aiTimeoutMs) {
-            visionClient.analyze(photo.data, prompt, aiSettings) { progress ->
+            visionClient.analyze(photo.data, knowledgePrompt.prompt, aiSettings) { progress ->
                 lastAiProgress = progress.toStatusText()
                 ServiceBridge.updateProcessingStatus(lastAiProgress)
                 val statusForGlasses = cleanAiStatusForGlasses(lastAiProgress)
@@ -269,15 +285,63 @@ class PhoneAIService : Service() {
         return NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Rokid Photo AI")
-            .setContentText(text)
+            .setContentText("$text. Keeping glasses bridge alive.")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 
     private fun updateNotification(text: String) {
         val notificationManager = getSystemService(android.app.NotificationManager::class.java)
         notificationManager.notify(Constants.NOTIFICATION_ID, createNotification(text))
+    }
+
+    private fun startBridgeForeground(text: String) {
+        val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
+            Constants.NOTIFICATION_ID,
+            createNotification(text),
+            serviceType
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireBridgeWakeLock(reason: String) {
+        val existing = wakeLock
+        if (existing != null && existing.isHeld) {
+            existing.acquire(WAKE_LOCK_TIMEOUT_MS)
+            return
+        }
+
+        val powerManager = getSystemService<PowerManager>() ?: return
+        wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "$packageName:GlassesBridge"
+        ).apply {
+            setReferenceCounted(false)
+            acquire(WAKE_LOCK_TIMEOUT_MS)
+        }
+        PhoneAIServiceRuntimeState.record(
+            this,
+            "wake lock acquired",
+            mapOf("reason" to reason, "timeoutMs" to WAKE_LOCK_TIMEOUT_MS)
+        )
+    }
+
+    private fun releaseBridgeWakeLock(reason: String) {
+        val lock = wakeLock ?: return
+        if (lock.isHeld) {
+            runCatching { lock.release() }
+                .onFailure { Log.w(TAG, "Unable to release wake lock", it) }
+        }
+        wakeLock = null
+        PhoneAIServiceRuntimeState.record(this, "wake lock released", mapOf("reason" to reason))
     }
 
     private fun BluetoothConnectionState.toNotificationText(): String = when (this) {
@@ -290,6 +354,7 @@ class PhoneAIService : Service() {
     companion object {
         private const val TAG = "PhoneAIService"
         private const val BLUETOOTH_WATCHDOG_INTERVAL_MS = 15_000L
+        private const val WAKE_LOCK_TIMEOUT_MS = 20 * 60 * 1_000L
         private const val MIN_AI_ANALYSIS_TIMEOUT_MS = 180_000L
         private const val PROGRESS_SEND_DRAIN_TIMEOUT_MS = 5_000L
         private const val EXTRA_START_REASON = "com.example.rokidphone.extra.START_REASON"
