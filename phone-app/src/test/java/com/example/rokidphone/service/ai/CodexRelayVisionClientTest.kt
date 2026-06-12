@@ -4,6 +4,13 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Before
@@ -11,6 +18,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.TimeUnit
+import kotlin.reflect.KClass
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
@@ -267,6 +276,25 @@ class CodexRelayVisionClientTest {
     }
 
     @Test
+    fun `analyze applies selected timeout to relay call`() = runTest {
+        val recordingCallFactory = RecordingCallFactory("""{"output_text":"timeout captured"}""")
+        client = CodexRelayVisionClient(
+            config = TestRelayConfig(baseUrl = server.url("/").toString().trimEnd('/')),
+            retryDelaysMs = emptyList(),
+            callFactory = recordingCallFactory
+        )
+
+        val result = client.analyze(
+            imageData = byteArrayOf(1, 2, 3),
+            prompt = "prompt",
+            requestSettings = AiRequestSettings(timeoutSeconds = 60)
+        )
+
+        assertThat(result.getOrThrow()).isEqualTo("timeout captured")
+        assertThat(recordingCallFactory.lastTimeoutSeconds).isEqualTo(60)
+    }
+
+    @Test
     fun `analyze rejects empty image before sending relay request`() = runTest {
         val result = client.analyze(ByteArray(0), "prompt")
 
@@ -290,5 +318,77 @@ class CodexRelayVisionClientTest {
                 model = model
             )
         )
+    }
+
+    private class RecordingCallFactory(
+        private val responseBody: String
+    ) : Call.Factory {
+        var lastTimeoutSeconds: Long? = null
+
+        override fun newCall(request: Request): Call {
+            return RecordingCall(request, responseBody) { timeoutSeconds ->
+                lastTimeoutSeconds = timeoutSeconds
+            }
+        }
+    }
+
+    private class RecordingCall(
+        private val request: Request,
+        private val responseBody: String,
+        private val onTimeoutRecorded: (Long) -> Unit
+    ) : Call {
+        private val timeout = okio.Timeout()
+        private var canceled = false
+        private var executed = false
+
+        override fun request(): Request = request
+
+        override fun execute(): Response {
+            executed = true
+            onTimeoutRecorded(timeout.timeoutNanos() / NANOS_PER_SECOND)
+            return response()
+        }
+
+        override fun enqueue(responseCallback: Callback) {
+            executed = true
+            onTimeoutRecorded(timeout.timeoutNanos() / NANOS_PER_SECOND)
+            responseCallback.onResponse(this, response())
+        }
+
+        override fun cancel() {
+            canceled = true
+        }
+
+        override fun isExecuted(): Boolean = executed
+
+        override fun isCanceled(): Boolean = canceled
+
+        override fun timeout(): okio.Timeout = timeout
+
+        override fun clone(): Call = RecordingCall(request, responseBody, onTimeoutRecorded)
+
+        override fun <T : Any> tag(type: KClass<T>): T? = request.tag(type)
+
+        override fun <T> tag(type: Class<out T>): T? = request.tag(type)
+
+        override fun <T : Any> tag(type: KClass<T>, computeIfAbsent: () -> T): T =
+            tag(type) ?: computeIfAbsent()
+
+        override fun <T : Any> tag(type: Class<T>, computeIfAbsent: () -> T): T =
+            tag(type) ?: computeIfAbsent()
+
+        private fun response(): Response {
+            return Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(responseBody.toResponseBody("application/json".toMediaType()))
+                .build()
+        }
+
+        companion object {
+            private const val NANOS_PER_SECOND = 1_000_000_000L
+        }
     }
 }

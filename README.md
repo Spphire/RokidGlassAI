@@ -13,7 +13,7 @@ In scope:
 - Phone receives, verifies, and calls the Codex++ relay `/v1/responses` endpoint.
 - Phone stores a preset prompt and adjustable AI parameters.
 - Phone camera can simulate the glasses image profile for relay testing.
-- Glasses display processing status, errors, and paged AI results.
+- Glasses display processing status, errors, and scrollable AI results.
 
 Out of scope:
 
@@ -162,13 +162,25 @@ PHONE_DEBUG_APPLICATION_ID_SUFFIX=.kbtest
 PHONE_DEBUG_VERSION_NAME_SUFFIX=-kbtest
 ```
 
+## iQOO/vivo Background Setup
+
+Android foreground service, wake lock, and the normal battery optimization whitelist are all enabled in the phone app. On iQOO/vivo, the vendor process freezer can still freeze a foreground-service app unless the app is allowed in the vendor background power settings.
+
+For repeatable ADB test setup, run:
+
+```powershell
+.\scripts\configure-iqoo-background.ps1 -PhoneSerial 10AF1F0PST00419 -StartApp -WakeScreen
+```
+
+The script applies the standard ADB allowances, moves the app to the active standby bucket, and runs a sticky `cmd activity unfreeze` for the current process. If `dumpsys activity processes com.example.rokidphone` still reports `isFrozen=true`, use the phone app's `Background Power Settings` button and enable Auto-start plus unrestricted background power for Rokid Photo AI.
+
 ## Manual Test Checklist
 
 1. Phone-only AI path
    - Launch phone app.
    - Confirm URL/model/prompt and the knowledge-base selector are shown.
    - Pick `Software Engineering`, `French TCF/TEF`, or `None`.
-   - Set `Fast` preset first: reasoning `minimal`, timeout `25s`.
+   - Set `Fast` preset first: reasoning `minimal`, timeout `60s`.
    - Tap `Take Phone Photo and Test AI`.
    - Verify the status changes from reading photo, to glasses simulation, to knowledge-base context, to calling AI, then result or timeout.
 

@@ -24,6 +24,7 @@ import com.example.rokidphone.service.ai.KnowledgeBaseStore
 import com.example.rokidphone.service.ai.PromptStore
 import com.example.rokidphone.service.photo.PhotoRepository
 import com.example.rokidphone.service.photo.ReceivedPhoto
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -165,23 +166,34 @@ class PhoneAIService : Service() {
         serviceScope.launch {
             while (true) {
                 delay(BLUETOOTH_WATCHDOG_INTERVAL_MS)
-                acquireBridgeWakeLock("watchdog")
-                if (!PhoneAIServiceRunPolicy.isAutoRunEnabled(this@PhoneAIService)) {
-                    Log.d(TAG, "Auto-run disabled; stopping watchdog and service")
+                try {
+                    acquireBridgeWakeLock("watchdog")
+                    if (!PhoneAIServiceRunPolicy.isAutoRunEnabled(this@PhoneAIService)) {
+                        Log.d(TAG, "Auto-run disabled; stopping watchdog and service")
+                        PhoneAIServiceRuntimeState.record(
+                            this@PhoneAIService,
+                            "watchdog stopping service",
+                            manager.debugSnapshot()
+                        )
+                        stopSelf()
+                        break
+                    }
                     PhoneAIServiceRuntimeState.record(
                         this@PhoneAIService,
-                        "watchdog stopping service",
+                        "watchdog ensureListening",
                         manager.debugSnapshot()
                     )
-                    stopSelf()
-                    break
+                    manager.ensureListening("service watchdog")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Bluetooth watchdog iteration failed; will retry", e)
+                    PhoneAIServiceRuntimeState.record(
+                        this@PhoneAIService,
+                        "watchdog iteration failed",
+                        mapOf("error" to (e.message ?: e::class.java.simpleName))
+                    )
                 }
-                PhoneAIServiceRuntimeState.record(
-                    this@PhoneAIService,
-                    "watchdog ensureListening",
-                    manager.debugSnapshot()
-                )
-                manager.ensureListening("service watchdog")
             }
         }
     }
@@ -353,7 +365,7 @@ class PhoneAIService : Service() {
 
     companion object {
         private const val TAG = "PhoneAIService"
-        private const val BLUETOOTH_WATCHDOG_INTERVAL_MS = 15_000L
+        private const val BLUETOOTH_WATCHDOG_INTERVAL_MS = 10_000L
         private const val WAKE_LOCK_TIMEOUT_MS = 20 * 60 * 1_000L
         private const val MIN_AI_ANALYSIS_TIMEOUT_MS = 180_000L
         private const val PROGRESS_SEND_DRAIN_TIMEOUT_MS = 5_000L

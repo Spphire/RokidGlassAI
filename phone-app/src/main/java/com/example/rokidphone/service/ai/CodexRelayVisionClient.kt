@@ -32,6 +32,13 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+private val defaultRelayHttpClient: Call.Factory = OkHttpClient.Builder()
+    .connectTimeout(20, TimeUnit.SECONDS)
+    .readTimeout(120, TimeUnit.SECONDS)
+    .writeTimeout(120, TimeUnit.SECONDS)
+    .callTimeout(130, TimeUnit.SECONDS)
+    .build()
+
 data class AiRequestProgress(
     val stage: AiRequestStage,
     val elapsedMs: Long,
@@ -55,15 +62,9 @@ enum class AiRequestStage(val label: String) {
 
 class CodexRelayVisionClient(
     private val config: VisionRelayConfig = CodexRelayConfig,
-    private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS
+    private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
+    private val callFactory: Call.Factory = defaultRelayHttpClient
 ) {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(120, TimeUnit.SECONDS)
-        .callTimeout(130, TimeUnit.SECONDS)
-        .build()
-
     suspend fun analyze(
         imageData: ByteArray,
         prompt: String = config.defaultPrompt,
@@ -219,7 +220,10 @@ class CodexRelayVisionClient(
             )
             val attemptStartMs = SystemClock.elapsedRealtime()
             val relayResponse = try {
-                client.newCall(request).awaitResponse().use { response ->
+                val call = callFactory.newCall(request).apply {
+                    timeout().timeout(settings.timeoutSeconds.toLong(), TimeUnit.SECONDS)
+                }
+                call.awaitResponse().use { response ->
                     RelayHttpResponse(
                         code = response.code,
                         isSuccessful = response.isSuccessful,

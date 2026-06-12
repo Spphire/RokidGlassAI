@@ -63,8 +63,8 @@ class BluetoothSppManager(
         private val APP_UUID: UUID = UUID.fromString("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         
         private const val BUFFER_SIZE = 8192
-        private const val CONNECTED_STALE_MS = 35_000L
-        private const val HEALTH_PROBE_GRACE_MS = 5_000L
+        private const val CONNECTED_STALE_MS = 20_000L
+        private const val HEALTH_PROBE_GRACE_MS = 3_000L
         private const val LISTENING_REFRESH_MS = 30_000L
         private const val LISTENER_RESTART_DELAY_MS = 250L
         private const val PRIMARY_RFCOMM_CHANNEL = 4
