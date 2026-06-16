@@ -322,6 +322,9 @@ object KnowledgeBaseRepository {
         if (includeRankPrior && !plan.hasSpecificSignals) {
             addRanking(chunks.sortedBy { it.rank }, weight = 0.4)
         }
+        if (includeRankPrior && fused.isEmpty()) {
+            addRanking(chunks.sortedBy { it.rank }, weight = 0.25)
+        }
 
         val byId = chunks.associateBy { it.id }
         return fused.entries

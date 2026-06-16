@@ -65,6 +65,19 @@ class KnowledgeBaseRepositoryTest {
     }
 
     @Test
+    fun `manual knowledge base keeps rank fallback for generic prompts`() = runTest {
+        val prompt = KnowledgeBaseRepository.buildPrompt(
+            context = context,
+            basePrompt = "answer the image",
+            knowledgeBaseId = KnowledgeBaseStore.SOFTWARE_ENGINEERING_ID
+        )
+
+        assertThat(prompt.profile?.id).isEqualTo(KnowledgeBaseStore.SOFTWARE_ENGINEERING_ID)
+        assertThat(prompt.contextChars).isGreaterThan(0)
+        assertThat(prompt.prompt).contains("知识库片段")
+    }
+
+    @Test
     fun `auto selection prefers software engineering for software query`() = runTest {
         val choice = KnowledgeBaseRepository.selectBestKnowledgeBase(
             context = context,

@@ -4,8 +4,11 @@
     <queries>
         <package android:name="com.iqoo.secure" />
         <package android:name="com.iqoo.powersaving" />
+        <package android:name="com.vivo.pem" />
+        <package android:name="com.vivo.safecenter" />
         <package android:name="com.vivo.permissionmanager" />
         <package android:name="com.vivo.abe" />
+        <package android:name="com.vivo.devicepower" />
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
