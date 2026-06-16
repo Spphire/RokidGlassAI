@@ -310,7 +310,7 @@ class PhoneAIService : Service() {
     }
 
     private fun startBridgeForeground(text: String) {
-        val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         } else {
             0

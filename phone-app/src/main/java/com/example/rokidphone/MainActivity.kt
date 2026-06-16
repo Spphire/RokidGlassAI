@@ -169,7 +169,7 @@ private fun PhotoAiWorkbench(
     var jpegQuality by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_JPEG_QUALITY.toString()) }
     var timeoutSeconds by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_TIMEOUT_SECONDS.toString()) }
     var selectedKnowledgeBaseId by rememberSaveable {
-        mutableStateOf(KnowledgeBaseStore.SOFTWARE_ENGINEERING_ID)
+        mutableStateOf(KnowledgeBaseStore.AUTO_ID)
     }
     var knowledgeBaseProfiles by remember { mutableStateOf<List<KnowledgeBaseProfile>>(emptyList()) }
     var knowledgeBaseStatus by remember { mutableStateOf("Loading knowledge bases...") }
@@ -413,7 +413,8 @@ private fun PhotoAiWorkbench(
         }
 
         if (batteryOptimized) {
-            TextButton(
+            Button(
+                modifier = Modifier.fillMaxWidth(),
                 onClick = {
                     runCatching {
                         backgroundSettingsLauncher.launch(context.backgroundRunSettingsIntent())
@@ -437,6 +438,20 @@ private fun PhotoAiWorkbench(
         }
 
         TextButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                runCatching {
+                    backgroundSettingsLauncher.launch(context.powerManagerSettingsIntent())
+                }.onFailure {
+                    backgroundSettingsLauncher.launch(context.appDetailsSettingsIntent())
+                }
+            }
+        ) {
+            Text("Power Manager")
+        }
+
+        TextButton(
+            modifier = Modifier.fillMaxWidth(),
             onClick = {
                 backgroundSettingsLauncher.launch(context.appDetailsSettingsIntent())
             }
@@ -470,6 +485,12 @@ private fun KnowledgeBaseSelector(
     onSelected: (String) -> Unit
 ) {
     val options = listOf(
+        KnowledgeBaseProfile(
+            id = KnowledgeBaseStore.AUTO_ID,
+            name = "Auto",
+            description = "Pick the best knowledge base for each request.",
+            asset = ""
+        ),
         KnowledgeBaseProfile(
             id = KnowledgeBaseStore.NONE_ID,
             name = "None",
@@ -539,6 +560,11 @@ private fun NumberField(
 }
 
 private fun List<KnowledgeBaseProfile>.knowledgeBaseStatusText(selectedId: String): String {
+    if (selectedId == KnowledgeBaseStore.AUTO_ID) {
+        val count = size
+        val chunks = sumOf { it.chunkCount }
+        return "Auto-selects from $count knowledge bases ($chunks chunks) for each request."
+    }
     if (selectedId == KnowledgeBaseStore.NONE_ID) {
         return "No knowledge base context will be attached."
     }
@@ -573,6 +599,26 @@ private fun Context.backgroundRunSettingsIntent(): Intent {
     } else {
         appDetailsSettingsIntent()
     }
+}
+
+private fun Context.powerManagerSettingsIntent(): Intent {
+    val vendorPackages = listOf(
+        "com.iqoo.powersaving",
+        "com.iqoo.secure",
+        "com.vivo.pem",
+        "com.vivo.safecenter",
+        "com.vivo.permissionmanager",
+        "com.vivo.devicepower"
+    )
+    return vendorPackages
+        .asSequence()
+        .mapNotNull { packageManager.getLaunchIntentForPackage(it) }
+        .firstOrNull()
+        ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        } else {
+            Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
+        }
 }
 
 private fun Context.appDetailsSettingsIntent(): Intent {

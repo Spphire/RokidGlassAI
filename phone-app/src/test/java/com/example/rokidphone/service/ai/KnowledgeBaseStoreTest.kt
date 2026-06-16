@@ -24,9 +24,9 @@ class KnowledgeBaseStoreTest {
     }
 
     @Test
-    fun `default selection uses software engineering knowledge base`() {
+    fun `default selection uses auto knowledge base mode`() {
         assertThat(KnowledgeBaseStore.getSelectedKnowledgeBaseId(context))
-            .isEqualTo(KnowledgeBaseStore.SOFTWARE_ENGINEERING_ID)
+            .isEqualTo(KnowledgeBaseStore.AUTO_ID)
     }
 
     @Test
@@ -38,10 +38,10 @@ class KnowledgeBaseStoreTest {
     }
 
     @Test
-    fun `invalid selection falls back to software engineering`() {
+    fun `invalid selection falls back to auto mode`() {
         KnowledgeBaseStore.saveSelectedKnowledgeBaseId(context, "missing")
 
         assertThat(KnowledgeBaseStore.getSelectedKnowledgeBaseId(context))
-            .isEqualTo(KnowledgeBaseStore.SOFTWARE_ENGINEERING_ID)
+            .isEqualTo(KnowledgeBaseStore.AUTO_ID)
     }
 }

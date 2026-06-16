@@ -3,6 +3,7 @@ package com.example.rokidphone.service.ai
 import android.content.Context
 
 object KnowledgeBaseStore {
+    const val AUTO_ID = "auto"
     const val NONE_ID = "none"
     const val SOFTWARE_ENGINEERING_ID = "software_engineering"
     const val FRENCH_ID = "french"
@@ -12,17 +13,18 @@ object KnowledgeBaseStore {
 
     fun getSelectedKnowledgeBaseId(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_SELECTED_KNOWLEDGE_BASE_ID, SOFTWARE_ENGINEERING_ID)
+            .getString(KEY_SELECTED_KNOWLEDGE_BASE_ID, AUTO_ID)
             ?.takeIf { it.isNotBlank() }
-            ?: SOFTWARE_ENGINEERING_ID
+            ?: AUTO_ID
     }
 
     fun saveSelectedKnowledgeBaseId(context: Context, knowledgeBaseId: String) {
         val normalized = when (knowledgeBaseId) {
+            AUTO_ID,
             NONE_ID,
             SOFTWARE_ENGINEERING_ID,
             FRENCH_ID -> knowledgeBaseId
-            else -> SOFTWARE_ENGINEERING_ID
+            else -> AUTO_ID
         }
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()

@@ -44,6 +44,30 @@ Main functions:
 - Run a foreground Bluetooth bridge service so the phone can keep receiving photos in the background.
 - Ask connected glasses to capture and analyze a new photo.
 
+### Background and Screen-off Bridge
+
+The phone side keeps the glasses link alive with a foreground `connectedDevice` service and a partial wake lock. The app declares the Bluetooth runtime permissions, notification permission, foreground service permissions, `WAKE_LOCK`, boot restart receiver, and `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
+
+For the iQOO/vivo test phone, Android's standard permissions are not enough by themselves. vivo can still freeze a foreground app after the screen turns off, which disables the wake lock at the system layer. Before testing glasses communication with the screen off:
+
+1. Launch the phone app once and allow Bluetooth and notification permissions.
+2. Tap `Allow Background` and approve ignoring battery optimizations.
+3. Tap `Power Manager` and enable the app in vivo/iQOO battery/security controls:
+   - Battery / 电池 -> Background power consumption / 后台耗电管理 -> `Rokid Photo AI` -> allow unrestricted or high background power usage.
+   - i管家 / 安全 / 权限管理 -> 自启动 -> allow `Rokid Photo AI`.
+   - App details -> Battery -> Unrestricted / 不受限制, if the option exists.
+4. Keep the persistent `Rokid Photo AI` notification visible while the glasses bridge is needed.
+5. On vivo/iQOO, lock the app in Recent Tasks as an extra guard during long tests.
+
+ADB can confirm the standard Android side:
+
+```powershell
+adb -s 10AF1F0PST00419 shell dumpsys activity services com.example.rokidphone
+adb -s 10AF1F0PST00419 shell dumpsys power
+```
+
+Look for `PhoneAIService` as a foreground service with type `connectedDevice` and a `PARTIAL_WAKE_LOCK` named `com.example.rokidphone:GlassesBridge`. If the wake lock shows `DISABLED` or `mIsFrozen` after the screen turns off, finish the vivo/iQOO manual battery and auto-start settings above.
+
 Default prompt:
 
 ```text
@@ -54,6 +78,9 @@ Default prompt:
 
 The phone app ships compact text snapshots in `phone-app/src/main/assets/knowledge_bases/`.
 The UI persists the selected knowledge base and injects selected snippets into both the phone-camera test path and the glasses-photo analysis path.
+The default `Auto` mode scores all available knowledge bases for each request. If the prompt clearly matches one domain, it injects that knowledge base; if the prompt is too generic, it mixes a few high-priority snippets from both Software Engineering and French TCF/TEF so the vision model can ignore irrelevant context after reading the image.
+
+Manual modes are still available: `Software Engineering`, `French TCF/TEF`, and `None`.
 
 Default source folders used by the sync script:
 
@@ -205,7 +232,7 @@ adb -s 10AF1F0PST00419 logcat -d -v time -s MainActivity CodexRelayVisionClient 
 ## Runtime Notes
 
 - The phone activity is locked to portrait.
-- The phone bridge runs as a foreground service with a `PARTIAL_WAKE_LOCK` so Bluetooth SPP can keep running while the phone is in the background or the screen is off.
+- The phone bridge runs as a foreground `connectedDevice` service with a `PARTIAL_WAKE_LOCK` so Bluetooth SPP can keep running while the phone is in the background or the screen is off.
 - On Android, grant Bluetooth permissions and allow notification permission when possible. Notification permission is not treated as a hard gate for starting the bridge, but a visible foreground notification makes the background service easier to monitor.
 - Disable battery optimization for the phone app from the in-app `Allow Background` action. On iQOO/vivo, also use `Background Power Settings` and enable auto-start plus unrestricted background power/background running for Rokid Photo AI.
 - If ADB only shows another device or `offline`, reconnect the iQOO and confirm USB debugging authorization before reading logs or installing.

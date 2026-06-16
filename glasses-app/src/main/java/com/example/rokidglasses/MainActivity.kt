@@ -64,7 +64,7 @@ import com.example.rokidglasses.ui.theme.RokidGlassesTheme
 import com.example.rokidglasses.viewmodel.GlassesViewModel
 
 private const val TWO_FINGER_TRIGGER_POINTERS = 2
-private const val ROKID_KEYCODE_SPRITE_DOUBLE_TAP = 262
+private val ROKID_TWO_FINGER_SHORTCUT_KEYCODES = setOf(260, 261, 262, 263)
 
 class MainActivity : ComponentActivity() {
     private var glassesViewModel: GlassesViewModel? = null
@@ -145,8 +145,12 @@ class MainActivity : ComponentActivity() {
                 true
             }
             KeyEvent.KEYCODE_CAMERA,
-            KeyEvent.KEYCODE_FOCUS,
-            ROKID_KEYCODE_SPRITE_DOUBLE_TAP -> {
+            KeyEvent.KEYCODE_FOCUS -> {
+                Log.d(TAG, "Camera/focus key accepted; requesting photo capture")
+                viewModel.captureAndSendPhoto()
+                true
+            }
+            in ROKID_TWO_FINGER_SHORTCUT_KEYCODES -> {
                 Log.d(TAG, "Two-finger capture key accepted; requesting photo capture")
                 viewModel.captureAndSendPhoto()
                 true

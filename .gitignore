@@ -22,6 +22,8 @@ build/
 
 # Project-local Python environment for helper scripts
 .venv/
+__pycache__/
+*.py[cod]
 
 # Local configuration file (sdk path, etc)
 local.properties
