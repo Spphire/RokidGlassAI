@@ -15,6 +15,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +52,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.rokidphone.service.BluetoothConnectionState
 import com.example.rokidphone.service.PhoneAIService
+import com.example.rokidphone.service.PhoneCompanionBridge
 import com.example.rokidphone.service.ServiceBridge
 import com.example.rokidphone.service.ai.AiRequestSettings
 import com.example.rokidphone.service.ai.AiRequestSettingsStore
@@ -74,6 +76,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+    private val companionAssociationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val status = PhoneCompanionBridge.handleAssociationResult(
+            this,
+            result.resultCode,
+            result.data
+        )
+        ServiceBridge.updateCompanionStatus(status)
+        checkPermissionsAndStart()
+    }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -90,6 +104,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PhoneCompanionBridge.refreshStatus(this)
+        PhoneCompanionBridge.startObservingAssociatedDevices(this)
         checkPermissionsAndStart()
 
         setContent {
@@ -97,7 +113,8 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     PhotoAiWorkbench(
                         onStart = { checkPermissionsAndStart() },
-                        onStop = { stopBridgeService() }
+                        onStop = { stopBridgeService() },
+                        onAssociateCompanion = { requestCompanionAssociation() }
                     )
                 }
             }
@@ -147,12 +164,24 @@ class MainActivity : ComponentActivity() {
     private fun stopBridgeService() {
         PhoneAIService.stop(this)
     }
+
+    private fun requestCompanionAssociation() {
+        PhoneCompanionBridge.requestAssociation(
+            context = this,
+            launchIntentSender = { intentSender ->
+                companionAssociationLauncher.launch(
+                    IntentSenderRequest.Builder(intentSender).build()
+                )
+            }
+        )
+    }
 }
 
 @Composable
 private fun PhotoAiWorkbench(
     onStart: () -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onAssociateCompanion: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -160,6 +189,7 @@ private fun PhotoAiWorkbench(
     val bluetoothState by ServiceBridge.bluetoothStateFlow.collectAsState()
     val deviceName by ServiceBridge.connectedDeviceNameFlow.collectAsState()
     val processingStatus by ServiceBridge.processingStatusFlow.collectAsState()
+    val companionStatus by ServiceBridge.companionStatusFlow.collectAsState()
     val phoneTestState by PhonePhotoTestRunner.state.collectAsState()
     var prompt by rememberSaveable { mutableStateOf("") }
     var reasoningEffort by rememberSaveable { mutableStateOf(AiRequestSettingsStore.DEFAULT_REASONING_EFFORT) }
@@ -396,6 +426,7 @@ private fun PhotoAiWorkbench(
         Text("Bluetooth: ${bluetoothState.toDisplayText()}")
         Text("Device: ${deviceName ?: "None"}")
         Text("Latest: $processingStatus")
+        Text(companionStatus)
         Text("Background: ${if (batteryOptimized) "Restricted" else "Allowed"}")
         Text("Screen-off bridge: ${if (serviceRunning) "Active" else "Inactive"}")
         Text(
@@ -410,6 +441,13 @@ private fun PhotoAiWorkbench(
             TextButton(onClick = onStop) {
                 Text("Stop")
             }
+        }
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onAssociateCompanion
+        ) {
+            Text("Associate Rokid Glasses")
         }
 
         if (batteryOptimized) {

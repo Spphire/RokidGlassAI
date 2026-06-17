@@ -58,6 +58,7 @@ class BluetoothSppClient(
         private const val PREFS_NAME = "rokid_glasses_bluetooth"
         private const val KEY_PREFERRED_PHONE_ADDRESS = "preferred_phone_address"
         private const val KEY_PREFERRED_PHONE_NAME = "preferred_phone_name"
+        private const val MAX_JSON_MESSAGE_CHARS = 64 * 1024
 
         private val PHONE_NAME_HINTS = mapOf(
             "iqoo" to 250,
@@ -729,6 +730,11 @@ class BluetoothSppClient(
             val textEnd = if (nextPhotoResponse >= 0) nextPhotoResponse else data.size
             if (textEnd > offset) {
                 messageBuffer.append(String(data, offset, textEnd - offset, Charsets.UTF_8))
+                if (messageBuffer.length > MAX_JSON_MESSAGE_CHARS) {
+                    Log.w(TAG, "Incoming JSON message exceeded ${MAX_JSON_MESSAGE_CHARS} chars; disconnecting")
+                    handleDisconnection()
+                    return
+                }
                 offset = textEnd
                 processCompleteJsonMessages(messageBuffer)
             } else {
@@ -782,6 +788,11 @@ class BluetoothSppClient(
             messageBuffer.delete(0, delimiterIndex + MESSAGE_DELIMITER.length)
 
             if (messageStr.isNotBlank()) {
+                if (messageStr.length > MAX_JSON_MESSAGE_CHARS) {
+                    Log.w(TAG, "Dropping oversized JSON message: ${messageStr.length} chars")
+                    handleDisconnection()
+                    return
+                }
                 parseAndEmitMessage(messageStr)
             }
         }

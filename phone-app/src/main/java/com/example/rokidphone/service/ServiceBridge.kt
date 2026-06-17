@@ -23,6 +23,9 @@ object ServiceBridge {
     private val _processingStatusFlow = MutableStateFlow("Waiting for glasses photo")
     val processingStatusFlow: StateFlow<String> = _processingStatusFlow.asStateFlow()
 
+    private val _companionStatusFlow = MutableStateFlow("Companion: not checked")
+    val companionStatusFlow: StateFlow<String> = _companionStatusFlow.asStateFlow()
+
     private val _capturePhotoFlow = MutableSharedFlow<Unit>(replay = 0)
     val capturePhotoFlow: SharedFlow<Unit> = _capturePhotoFlow.asSharedFlow()
 
@@ -51,6 +54,10 @@ object ServiceBridge {
 
     fun updateProcessingStatus(status: String) {
         _processingStatusFlow.value = status
+    }
+
+    fun updateCompanionStatus(status: String) {
+        _companionStatusFlow.value = status
     }
 
     suspend fun requestStartListening() {

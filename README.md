@@ -33,6 +33,10 @@ RokidPhotoAI/
 
 Gradle includes only `:common`, `:phone-app`, and `:glasses-app`.
 
+## Developer Docs
+
+See `doc/DEVELOPMENT.md` for the Chinese development runbook, including Windows environment setup, APK deployment commands, iQOO/vivo background-running settings, Companion Device notes, full pipeline tests, and common troubleshooting steps.
+
 ## Phone App
 
 Main functions:
@@ -49,6 +53,10 @@ Main functions:
 The phone side keeps the glasses link alive with a foreground `connectedDevice` service and a partial wake lock. The app declares the Bluetooth runtime permissions, notification permission, foreground service permissions, `WAKE_LOCK`, boot restart receiver, and `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
 
 For the iQOO/vivo test phone, Android's standard permissions are not enough by themselves. vivo can still freeze a foreground app after the screen turns off, which disables the wake lock at the system layer. Before testing glasses communication with the screen off:
+
+**Critical iQOO setting:** open Android `App info` for `Rokid Photo AI`, go to `Battery` / `电量`, and enable `Allow background power consumption` / `允许后台耗电`. On the current iQOO test phone this is the key setting that keeps the foreground Bluetooth bridge from being frozen after screen-off.
+
+For the complete checklist, use `doc/DEVELOPMENT.md`.
 
 1. Launch the phone app once and allow Bluetooth and notification permissions.
 2. Tap `Allow Background` and approve ignoring battery optimizations.
@@ -192,6 +200,8 @@ PHONE_DEBUG_VERSION_NAME_SUFFIX=-kbtest
 ## iQOO/vivo Background Setup
 
 Android foreground service, wake lock, and the normal battery optimization whitelist are all enabled in the phone app. On iQOO/vivo, the vendor process freezer can still freeze a foreground-service app unless the app is allowed in the vendor background power settings.
+
+On the current iQOO test phone, the must-check manual switch is `App info -> Battery -> Allow background power consumption` (`应用信息 -> 电量 -> 允许后台耗电`). Treat this as the first thing to verify when screen-off Bluetooth drops or `dumpsys` shows the app frozen.
 
 For repeatable ADB test setup, run:
 

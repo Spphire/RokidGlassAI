@@ -41,6 +41,7 @@ class PhoneAIService : Service() {
     private val photoRepository by lazy { PhotoRepository(this, serviceScope) }
     private var bluetoothManager: BluetoothSppManager? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var keepAliveOverlay: PhoneKeepAliveOverlay? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +49,8 @@ class PhoneAIService : Service() {
         NotificationChannels.ensureServiceChannel(this)
         startBridgeForeground("Waiting for glasses")
         acquireBridgeWakeLock("service create")
+        keepAliveOverlay = PhoneKeepAliveOverlay(this).also { it.showIfAllowed() }
+        PhoneCompanionBridge.startObservingAssociatedDevices(this)
         ServiceBridge.updateServiceState(true)
         startBluetoothBridge()
     }
@@ -95,6 +98,8 @@ class PhoneAIService : Service() {
         )
         ServiceBridge.updateServiceState(false)
         bluetoothManager?.disconnect(restartListening = false)
+        keepAliveOverlay?.hide()
+        keepAliveOverlay = null
         releaseBridgeWakeLock("service destroy")
         serviceScope.cancel()
         super.onDestroy()

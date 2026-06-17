@@ -1,6 +1,7 @@
 package com.example.rokidphone.service
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
@@ -67,6 +68,7 @@ class BluetoothSppManager(
         private const val HEALTH_PROBE_GRACE_MS = 3_000L
         private const val LISTENING_REFRESH_MS = 30_000L
         private const val LISTENER_RESTART_DELAY_MS = 250L
+        private const val MAX_JSON_MESSAGE_CHARS = 64 * 1024
         private const val PRIMARY_RFCOMM_CHANNEL = 4
         private const val FALLBACK_RFCOMM_CHANNEL = 1
         
@@ -554,6 +556,11 @@ class BluetoothSppManager(
                 val textEnd = if (nextPhotoPacket >= 0) nextPhotoPacket else data.size
                 if (textEnd > offset) {
                     messageBuffer.append(String(data, offset, textEnd - offset, Charsets.UTF_8))
+                    if (messageBuffer.length > MAX_JSON_MESSAGE_CHARS) {
+                        Log.w(TAG, "Incoming JSON message exceeded ${MAX_JSON_MESSAGE_CHARS} chars; disconnecting")
+                        disconnect(restartListening = true)
+                        return
+                    }
                     offset = textEnd
                     processCompleteJsonMessages(messageBuffer)
                 } else {
@@ -575,6 +582,11 @@ class BluetoothSppManager(
             messageBuffer.delete(0, newlineIndex + 1)
 
             if (messageJson.isNotEmpty()) {
+                if (messageJson.length > MAX_JSON_MESSAGE_CHARS) {
+                    Log.w(TAG, "Dropping oversized JSON message: ${messageJson.length} chars")
+                    disconnect(restartListening = true)
+                    return
+                }
                 try {
                     val message = Message.fromJson(messageJson)
                     if (message == null) {
@@ -954,6 +966,7 @@ class BluetoothSppManager(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun createServerSocket(uuid: UUID, label: String): ServerSocketCandidate? {
         return try {
             bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, uuid)
