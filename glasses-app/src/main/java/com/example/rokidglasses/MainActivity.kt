@@ -38,6 +38,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -47,7 +48,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -63,13 +63,11 @@ import com.example.rokidglasses.service.photo.CameraService
 import com.example.rokidglasses.ui.theme.RokidGlassesTheme
 import com.example.rokidglasses.viewmodel.GlassesViewModel
 
-private const val TWO_FINGER_TRIGGER_POINTERS = 2
-private val ROKID_TWO_FINGER_SHORTCUT_KEYCODES = setOf(260, 261, 262, 263)
-
 class MainActivity : ComponentActivity() {
     private var glassesViewModel: GlassesViewModel? = null
     private var pendingDebugConnect: DebugConnectRequest? = null
     private var pendingDebugCaptureOnly = false
+    private var answerScrollHandler: ((Float) -> Boolean)? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -139,19 +137,47 @@ class MainActivity : ComponentActivity() {
         )
 
         return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                if (scrollAnswerBy(-ANSWER_SCROLL_STEP_PX)) {
+                    Log.d(TAG, "Answer scrolled up by key")
+                    true
+                } else {
+                    super.onKeyDown(keyCode, event)
+                }
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (scrollAnswerBy(ANSWER_SCROLL_STEP_PX)) {
+                    Log.d(TAG, "Answer scrolled down by key")
+                    true
+                } else {
+                    super.onKeyDown(keyCode, event)
+                }
+            }
+            KeyEvent.KEYCODE_PAGE_UP -> {
+                if (scrollAnswerBy(-ANSWER_SCROLL_PAGE_PX)) {
+                    Log.d(TAG, "Answer page scrolled up by key")
+                    true
+                } else {
+                    super.onKeyDown(keyCode, event)
+                }
+            }
+            KeyEvent.KEYCODE_PAGE_DOWN -> {
+                if (scrollAnswerBy(ANSWER_SCROLL_PAGE_PX)) {
+                    Log.d(TAG, "Answer page scrolled down by key")
+                    true
+                } else {
+                    super.onKeyDown(keyCode, event)
+                }
+            }
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER -> {
-                Log.d(TAG, "Single tap key ignored; capture requires two-finger shortcut")
+                Log.d(TAG, "Single tap key accepted; requesting photo capture")
+                viewModel.captureAndSendPhoto()
                 true
             }
             KeyEvent.KEYCODE_CAMERA,
             KeyEvent.KEYCODE_FOCUS -> {
                 Log.d(TAG, "Camera/focus key accepted; requesting photo capture")
-                viewModel.captureAndSendPhoto()
-                true
-            }
-            in ROKID_TWO_FINGER_SHORTCUT_KEYCODES -> {
-                Log.d(TAG, "Two-finger capture key accepted; requesting photo capture")
                 viewModel.captureAndSendPhoto()
                 true
             }
@@ -161,6 +187,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_PAGE_UP,
+            KeyEvent.KEYCODE_PAGE_DOWN -> {
+                answerScrollHandler != null || super.onKeyUp(keyCode, event)
+            }
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER -> {
                 true
@@ -260,8 +292,17 @@ class MainActivity : ComponentActivity() {
     private fun isDebuggable(): Boolean =
         (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
+    fun setAnswerScrollHandler(handler: ((Float) -> Boolean)?) {
+        answerScrollHandler = handler
+    }
+
+    private fun scrollAnswerBy(deltaPx: Float): Boolean =
+        answerScrollHandler?.invoke(deltaPx) == true
+
     private companion object {
         private const val TAG = "MainActivity"
+        private const val ANSWER_SCROLL_STEP_PX = 96f
+        private const val ANSWER_SCROLL_PAGE_PX = 320f
         private const val EXTRA_DEBUG_CONNECT_ADDRESS = "debug_connect_address"
         private const val EXTRA_DEBUG_CONNECT_NAME = "debug_connect_name"
         private const val EXTRA_DEBUG_CONNECT_RETRIES = "debug_connect_retries"
@@ -280,9 +321,26 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     var showDeviceSelector by remember { mutableStateOf(false) }
     val answerScrollState = rememberScrollState()
+    val context = LocalContext.current
 
     LaunchedEffect(uiState.displayText) {
         answerScrollState.scrollTo(0)
+    }
+
+    DisposableEffect(context, answerScrollState, uiState.displayText) {
+        val activity = context as? MainActivity
+        val handler: (Float) -> Boolean = { deltaPx ->
+            if (uiState.displayText.isBlank() || answerScrollState.maxValue <= 0) {
+                false
+            } else {
+                answerScrollState.dispatchRawDelta(deltaPx)
+                true
+            }
+        }
+        activity?.setAnswerScrollHandler(handler)
+        onDispose {
+            activity?.setAnswerScrollHandler(null)
+        }
     }
 
     Box(
@@ -298,15 +356,13 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                     )
                 }
             }
-            .pointerInput(uiState.isConnected) {
-                detectTwoFingerPress {
-                    Log.d("GlassesMainScreen", "Two-finger press accepted")
-                    if (uiState.isConnected) {
-                        viewModel.captureAndSendPhoto()
-                    } else {
-                        viewModel.refreshPairedDevices()
-                        showDeviceSelector = true
-                    }
+            .clickable {
+                Log.d("GlassesMainScreen", "Single tap accepted")
+                if (uiState.isConnected) {
+                    viewModel.captureAndSendPhoto()
+                } else {
+                    viewModel.refreshPairedDevices()
+                    showDeviceSelector = true
                 }
             }
     ) {
@@ -345,23 +401,6 @@ fun GlassesMainScreen(viewModel: GlassesViewModel) {
                 },
                 onDismiss = { showDeviceSelector = false }
             )
-        }
-    }
-}
-
-private suspend fun PointerInputScope.detectTwoFingerPress(onPress: () -> Unit) {
-    awaitPointerEventScope {
-        while (true) {
-            val event = awaitPointerEvent()
-            if (event.changes.count { it.pressed } >= TWO_FINGER_TRIGGER_POINTERS) {
-                event.changes.forEach { it.consume() }
-                onPress()
-
-                do {
-                    val releaseEvent = awaitPointerEvent()
-                    releaseEvent.changes.forEach { it.consume() }
-                } while (releaseEvent.changes.any { it.pressed })
-            }
         }
     }
 }
@@ -506,20 +545,24 @@ fun AnswerDisplayArea(
             label = "display_text"
         ) { text ->
             if (text.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState)
-                ) {
-                    Text(
-                        text = text,
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Start,
-                        lineHeight = 18.sp,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Box(modifier = Modifier.weight(1f))
+                    Box(
+                        modifier = Modifier
+                            .weight(2f)
+                            .fillMaxWidth()
+                            .verticalScroll(scrollState)
+                    ) {
+                        Text(
+                            text = text,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Start,
+                            lineHeight = 18.sp,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         }

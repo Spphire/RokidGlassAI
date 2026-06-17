@@ -4,7 +4,7 @@
 
     <string name="processing">Processing...</string>
     <string name="connected">Connected</string>
-    <string name="tap_to_connect">2-finger connect</string>
+    <string name="tap_to_connect">Tap to connect</string>
 
     <string name="select_phone">Select Phone</string>
     <string name="no_paired_devices">No paired devices found</string>
@@ -16,9 +16,9 @@
     <string name="not_connected">No phone</string>
     <string name="connecting_status">Connecting</string>
     <string name="connected_ready">Ready</string>
-    <string name="please_connect_phone">2-finger connect</string>
+    <string name="please_connect_phone">Tap to connect</string>
     <string name="please_wait">Wait</string>
-    <string name="tap_touchpad_photo">2-finger capture</string>
+    <string name="tap_touchpad_photo">Tap to capture</string>
     <string name="please_try_again">Please try again</string>
     <string name="error_prefix">Error: %s</string>
 
